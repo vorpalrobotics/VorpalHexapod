@@ -350,7 +350,7 @@ void RecordPlayHandler() {
               SDGamepadRecordFile.seek(0);
               length = SDGamepadRecordFile.read();
             }
-            Serial.println("SDLOOP");
+            //Serial.println("#SDLOOP");
           } else {
             RecState = REC_STOPPED;
             return;
@@ -359,21 +359,21 @@ void RecordPlayHandler() {
         // if we get here, there is a full frame to send to the robot
         BlueTooth.print("V1");
         BlueTooth.write(length);
-        Serial.print("#SNDV1:Len="); Serial.println(length);
+        //Serial.print("#SNDV1:Len="); Serial.println(length);
         {
             int checksum = length;  // the length byte is included in the checksum
             for (int i = 0; i < length && SDGamepadRecordFile.available()>0; i++) {
               int c = SDGamepadRecordFile.read();
               checksum += c;
               BlueTooth.write(c);
-              Serial.write(c);Serial.print("(");Serial.print(c);Serial.print(")");
+              //Serial.write(c);Serial.print("(");Serial.print(c);Serial.print(")");
             }
             checksum = (checksum % 256);
             BlueTooth.write(checksum);
-            Serial.print("#SNTCHKSUM:"); Serial.println(checksum);
+            //Serial.print("#SNTCHKSUM:"); Serial.println(checksum);
         }
        
-        Serial.print("#SDPLAY@"); Serial.println(SDGamepadRecordFile.position());
+        //Serial.print("#SDPLAY@"); Serial.println(SDGamepadRecordFile.position());
       }
       break;
 
@@ -389,7 +389,7 @@ void RecordPlayHandler() {
         // it's not time to record a frame yet
         return;
       }
-      Serial.print("REC@"); Serial.println(SDGamepadRecordFile.position());
+      //Serial.print("REC@"); Serial.println(SDGamepadRecordFile.position());
       RecNextEventTime = millis() + REC_FRAMEMILLIS;
       { // local variables require a scope
         int three = 3;  // yeah this is weird but trust me
@@ -400,7 +400,7 @@ void RecordPlayHandler() {
       }
       // we don't record headers or checksums. the SD card is considered a reliable device and
       // it has its own error detection
-      Serial.print("#SDRECSZ="); Serial.println(SDGamepadRecordFile.size());
+      //Serial.print("#SDRECSZ="); Serial.println(SDGamepadRecordFile.size());
       
       break;
 
@@ -408,7 +408,7 @@ void RecordPlayHandler() {
     case REC_ERASING:
       //debug("ERASING"); debugln();
       // to erase the recording, close the file, remove the file, then re-open it again
-      Serial.println("#SDERASE");
+      //Serial.println("#SDERASE");
       SDGamepadRecordFile.close();
       SD.remove(SDGamepadRecordFileName) || Serial.println("#SDRF");  // SD Remove Failed
       SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
@@ -427,7 +427,7 @@ void RecordPlayHandler() {
         SDGamepadRecordFile.seek(0);       
       }
 
-      Serial.println("#SDRW");
+      //Serial.println("#SDRW");
 
       break;
 
@@ -460,7 +460,7 @@ void setup() {
 
   if (SDGamepadRecordFile) {
     SDGamepadRecordFile.seek(0);  // rewind it if it already exists, so the PLAY button will immediately work.
-    Serial.print("#SDSZ="); Serial.println(SDGamepadRecordFile.available());
+    //Serial.print("#SDSZ="); Serial.println(SDGamepadRecordFile.available());
   } else {
     setBeep(BF_ERROR, BD_LONG);
     Serial.println("#SDOF");    // SD Open Failed
@@ -516,7 +516,7 @@ int handleSerialInput() {
   
   while (Serial.available()>0) {
     int c = Serial.read();
-    Serial.print("C="); Serial.write(c); Serial.print("/"); Serial.print(c); Serial.println("");
+    //Serial.print("C="); Serial.write(c); Serial.print("/"); Serial.print(c); Serial.println("");
     dataread++;
     
     switch (ScratchState) {
@@ -526,7 +526,7 @@ int handleSerialInput() {
         } else if (c == 'R') {
           ScratchState = SCR_WAITING_FOR_REC_1;
         } else {
-          Serial.print("SCRERR:HDR:"); Serial.print(c); Serial.print("("); Serial.write(c); Serial.println(")");
+          Serial.print("#SCRERR:HDR:"); Serial.print(c); Serial.print("("); Serial.write(c); Serial.println(")");
         }
         break;
       case SCR_WAITING_FOR_HEX_1:
@@ -583,7 +583,7 @@ int handleSerialInput() {
           if (c == 'S') { // stop recording if final letter of record transmission is a capital S
             StopScratchRecording();
             ScratchState = SCR_WAITING_FOR_HEADER;
-            Serial.println("#SCRECSTP");
+            //Serial.println("#SCRECSTP");
           } else { // start recording
             // if we're already recording to the same file, don't do anything
             if (SDGamepadRecordFileName[0] == ScratchSDFileName[0] &&
@@ -600,7 +600,7 @@ int handleSerialInput() {
             SD.remove(SDGamepadRecordFileName); // erase any prior version
             SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
             ScratchState = SCR_WAITING_FOR_HEADER;
-            Serial.print("#SCRECFILE="); Serial.println(SDGamepadRecordFileName);
+            //Serial.print("#SCRECFILE="); Serial.println(SDGamepadRecordFileName);
             RecState = REC_STOPPED;  // if recording was previously happening from the gamepad this stops it
           }
        } // end of "if scratchxmitbytes == 3"
@@ -631,10 +631,10 @@ void loop() {
     Serial.write(BlueTooth.read());
   }
 
-  // if we got commands from the serial port, we need to suppress commands coming from
-  // the button pad for a few seconds, and also disable debug printing to the serial port
+  // if we got commands from the serial port recently, we need to suppress commands coming from
+  // the button pad for a moment, and also disable debug printing to the serial port
   if (serialinput > 0) {
-    suppressButtonsUntil = millis() + 2000;
+    suppressButtonsUntil = millis() + 1000;
   }
 
   if (millis() < suppressButtonsUntil) {
@@ -727,12 +727,12 @@ void loop() {
         SDGamepadRecordFileName[2] == CurDpad) {
           // if all those conditions are met then we're in the middle of playing
           // a recorded mode button action and everything is as it should be
-          Serial.print("#PLM:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);
+          //Serial.print("#PLM:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);
     } else {
           // if we get here, we're supposed to be playing a special command, however
           // either none is currently playing or the wrong one is playing
           SDGamepadRecordFile.close();  // close any existing file that's playing
-          Serial.print("#PLM:Setup:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);Serial.println(SDGamepadRecordFileName);
+          //Serial.print("#PLM:Setup:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);Serial.println(SDGamepadRecordFileName);
 
           // see if there exists a file for the current button sequence
           char cmdfile[8];
@@ -748,9 +748,9 @@ void loop() {
 
             RecState = REC_PLAYING;
             PlayLoopMode = 1;  // playing from a button causes looping
-            Serial.print("#PLMPLAY@");Serial.println(SDGamepadRecordFileName);
+            //Serial.print("#PLMPLAY@");Serial.println(SDGamepadRecordFileName);
           } else {
-            Serial.print("#NOPLM:");Serial.print(cmdfile);Serial.print("/");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);
+            //Serial.print("#NOPLM:");Serial.print(cmdfile);Serial.print("/");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);
             // There is no recording for the current button sequence so we should drop out of play mode
             RecState = REC_STOPPED;
             PlayLoopMode = 0;

@@ -1,3 +1,4 @@
+
 ////////////////////////////////////////////////////////////////////////////////
 //           Vorpal Combat Hexapod Control Program Version 4D1
 //
@@ -73,6 +74,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <SoftwareSerial.h>
+#include <SPI.h>
+#include <Pixy.h>
+
+Pixy CmuCam5; // cmu cam 5 support as an SPI device
 
 // called this way, it uses the default address 0x40
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
@@ -193,6 +198,9 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 #define BATTERYSAVER 5000   // milliseconds in stand mode before servos all detach to save power and heat buildup
 
 short ServoPos[2*NUM_LEGS];
+long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
+long LastReceiveTime = 0;   // last time we got a bluetooth packet
+long LastValidReceiveTime = 0;  // last time we got a completely valid packet including correct checksum
 
 void beep(int f, int t) {
   if (f > 0 && t > 0) {
@@ -229,8 +237,9 @@ void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw) {
           setHipRaw(i, hip_pos);
         }
       }
-      if (knee_pos != NOMOVE)
+      if (knee_pos != NOMOVE) {
         setKnee(i, knee_pos);
+      }
     }
     legmask = (legmask>>1);  // shift down one bit position
   }
@@ -1231,13 +1240,21 @@ void boogie_woogie(int legs_flat, int submode, int timingfactor) {
 
 SoftwareSerial BlueTooth(3,2);  // Bluetooth pins: TX=3=Yellow wire,  RX=2=Green wire
 
+int ServosDetached = 0;
+
 void attach_all_servos() {
-  pwm.setPWMFreq(60);   // running at 60 hz instead of the more typical 50 hz
+  for (int i = 0; i < 12; i++) {
+    setServo(i, ServoPos[i]);
+  }
+  ServosDetached = 0;
+  return;
 }
 void detach_all_servos() {
+  //if (millis()%5000 < 10) beep(1200,10);
   for (int i = 0; i < 16; i++) {
     pwm.setPin(i,0,false); // stop pulses which will quickly detach the servo
   }
+  ServosDetached = 1;
 }
 
 void setup() {
@@ -1261,13 +1278,14 @@ void setup() {
   delay(250);
   BlueTooth.println("Vorpal H12 starting!");
 
-  pwm.begin();
-  
+  pwm.begin();  
   pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
 
   stand();
   delay(600);
   beep(400);
+
+  //CmuCam5.init();
 
   yield();
 }
@@ -1278,38 +1296,84 @@ void setServo(int servonum, int position) {
   int p = map(position,0,180,SERVOMIN,SERVOMAX);
   pwm.setPWM(servonum, 0, p);
   ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
+
+  if (0) {
+    ServosDetached = 0;
+    Serial.print("D");
+    for (int i = 0; i < 12; i++) {
+      if (i != servonum && ServoPos[i]>=0 && ServoPos[i]<=180) {
+        pwm.setPWM(i, 0, map(ServoPos[i],0,180,SERVOMIN,SERVOMAX));
+      }
+    }
+  }
 }
 
-long lastSensorDataTime = 0;
-#define SENSORPOLLTIME 100 // send sensor data 10 times per second
+#define ULTRAOUTPUTPIN 7
+#define ULTRAINPUTPIN  8
+
+unsigned int readUltrasonic() {  // returns number of centimeters from ultrasonic rangefinder
+
+  pinMode(ULTRAOUTPUTPIN, OUTPUT);
+  digitalWrite(ULTRAOUTPUTPIN, LOW);
+  delayMicroseconds(5);
+  digitalWrite(ULTRAOUTPUTPIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(ULTRAOUTPUTPIN, LOW);
+  
+  unsigned int duration = pulseIn(ULTRAINPUTPIN, HIGH, 18000);  // maximum 18 milliseconds which would be about 10 feet distance from object
+
+  //Serial.print("ultra cm:"); Serial.println(duration/58);
+  
+  if (duration <100) { // Either 0 means timed out, or less than 2cm is out of range as well
+    return 1000;   // we will use this large value to mean out of range, since 400 cm is the manufacturer's max range published
+  }
+  return (duration) / 58;  // this converts microseconds of sound travel time to centimeters. Remember the sound has to go back and forth
+                           // so it's traveling twice as far as the object's distance
+}
 
 // write out a word, high byte first, and return checksum of two individual bytes
-int 
+unsigned int 
 bluewriteword(int w) {
-  int h = highByte(w);
+  unsigned int h = highByte(w);
   BlueTooth.write(h);
-  int l = lowByte(w);
+  unsigned int l = lowByte(w);
   BlueTooth.write(l);
   return h+l;
 }
 
 void
 sendSensorData() {
-  return;
-  if (millis() > lastSensorDataTime+SENSORPOLLTIME) {
-    lastSensorDataTime = millis();
 
-    BlueTooth.print("V");
-    BlueTooth.print("1");
-    int length = 6;
-    int checksum = length;
-    BlueTooth.write(length);
-    checksum += bluewriteword(analogRead(A3));
-    checksum += bluewriteword(analogRead(A6));
-    checksum += bluewriteword(analogRead(A7));
-    checksum = (checksum%256);
-    BlueTooth.print(checksum); // end with checksum of data and length   
+  unsigned int ultra = readUltrasonic(); // this delays us 20 milliseconds but we should still be well within timing constraints
+  //uint16_t blocks = CmuCam5.getBlocks(1); // just return the largest object for now
+  int blocks = 0; // comment out cmucam for now
+  
+  BlueTooth.print("V");
+  BlueTooth.print("1");
+  int length = 8;  //+blocks?10:0; // if there is a cmucam block, we need to add 10 more bytes of data
+  unsigned int checksum = length;
+  BlueTooth.write(length);
+  //////////////////for testing only////////////////////////////////
+  //int testword = 567; // for testing we will for now hard code the first sensor to a fixed value
+  //checksum += bluewriteword(testword);
+  //checksum += bluewriteword(testword);
+  //checksum += bluewriteword(testword);
+  /////////////////////////////////////////////////////////////////
+  checksum += bluewriteword(analogRead(A3));
+  checksum += bluewriteword(analogRead(A6));
+  checksum += bluewriteword(analogRead(A7));
+  checksum += bluewriteword(ultra);
+  if (blocks > 0) {
+    //checksum += bluewriteword(CmuCam5.blocks[0].signature);
+    //checksum += bluewriteword(CmuCam5.blocks[0].x);
+    //checksum += bluewriteword(CmuCam5.blocks[0].y);
+    //checksum += bluewriteword(CmuCam5.blocks[0].width);
+    //checksum += bluewriteword(CmuCam5.blocks[0].height);
   }
+  
+  checksum = (checksum%256);
+  BlueTooth.write(checksum); // end with checksum of data and length   
+
 }
 
 #define P_WAITING_FOR_HEADER 0
@@ -1328,7 +1392,7 @@ int packetState = P_WAITING_FOR_HEADER;
 
 void packetErrorChirp(char c) {
   beep(70,8);
-  Serial.print("BTER:"); Serial.print(packetState);Serial.print(c);Serial.print("A"); Serial.println(BlueTooth.available());
+  Serial.print("BTERR:"); Serial.print(packetState);Serial.print(c);Serial.print("A"); Serial.println(BlueTooth.available());
   packetState = P_WAITING_FOR_HEADER; // reset to initial state if any error occurs
 }
 
@@ -1351,6 +1415,7 @@ int receiveDataHandler() {
       case P_WAITING_FOR_HEADER:
         if (c == 'V') {
           packetState = P_WAITING_FOR_VERSION;
+          //Serial.print("GOTV ");
         } else {
           // may as well flush up to the next header
           int flushcount = 0;
@@ -1366,6 +1431,7 @@ int receiveDataHandler() {
       case P_WAITING_FOR_VERSION:
         if (c == '1') {
           packetState = P_WAITING_FOR_LENGTH;
+          //Serial.print("G1 ");
         } else if (c == 'V') {
           // this can actually happen if the checksum was a 'V' and some noise caused a
           // flush up to the checksum's V, that V would be consumed by state WAITING FOR HEADER
@@ -1382,6 +1448,8 @@ int receiveDataHandler() {
             packetLength = c;
             packetLengthReceived = 0;
             packetState = P_READING_DATA;
+
+            Serial.print("L="); Serial.println(packetLength);
         }
         break;
       case P_READING_DATA:
@@ -1389,6 +1457,7 @@ int receiveDataHandler() {
         if (packetLengthReceived == packetLength) {
           packetState = P_WAITING_FOR_CHECKSUM;
         }
+        //Serial.print("CHAR("); Serial.print(c); Serial.print("/"); Serial.write(c); Serial.println(")");
         break;
 
       case P_WAITING_FOR_CHECKSUM:
@@ -1406,6 +1475,7 @@ int receiveDataHandler() {
             packetErrorChirp(c);
             Serial.print("cs fail "); Serial.print(sum); Serial.print("!="); Serial.print((int)c);Serial.print("len=");Serial.println(packetLength);
           } else {
+            LastValidReceiveTime = millis();  // set the time we received a valid packet
             processPacketData();
             packetState = P_WAITING_FOR_HEADER;
             return 1; // new data arrived!
@@ -1445,10 +1515,12 @@ void processPacketData() {
         if (i <= packetLengthReceived - 5) {
             int honkfreq = word(packetData[i+1],packetData[i+2]);
             int honkdur = word(packetData[i+3],packetData[i+4]);
-            Serial.print("HFreq="); Serial.print(honkfreq); Serial.print("HDur="); Serial.println(honkdur);
             // eventually we should queue beeps so scratch can issue multiple tones
             // to be played over time.
-            beep(honkfreq, honkdur);
+            if (honkfreq > 0 && honkdur > 0) {
+              Serial.println("Beep Command");
+              beep(honkfreq, honkdur);    
+            }  
             i += 5; // length of beep command is 5 bytes
         } else {
           // again, we're short on bytes for this command so something is amiss
@@ -1461,8 +1533,14 @@ void processPacketData() {
         if (i <= packetLengthReceived - 5) {
            unsigned int knee = packetData[i+2];
            unsigned int hip = packetData[i+3];
-           if (knee == 255) knee = NOMOVE;
-           if (hip == 255) hip = NOMOVE;
+           if (knee == 255) {
+              knee = NOMOVE;
+              Serial.println("KNEE NOMOVE");
+           }
+           if (hip == 255) {
+            hip = NOMOVE;
+            Serial.println("HIP NOMOVE");
+           }
            unsigned int legmask = packetData[i+1];
            int raw = packetData[i+4];
            Serial.print("SETLEG:"); Serial.print(legmask,DEC); Serial.print("/");Serial.print(knee);
@@ -1470,6 +1548,10 @@ void processPacketData() {
            setLeg(legmask, knee, hip, 0, raw);
            mode = MODE_LEG;   // this stops auto-repeat of gamepad mode commands
            i += 5;  // length of leg command
+           startedStanding = -1; // don't sleep the legs when a specific LEG command was received
+           if (ServosDetached) { // wake up any sleeping servos
+            attach_all_servos();
+           }
         } else {
           // again, we're short on bytes for this command so something is amiss
           beep(BF_ERROR, BD_MED);
@@ -1482,6 +1564,15 @@ void processPacketData() {
         // CMUCAM
         i++;  // right now this is a single byte command, later we will take options for which sensors to send
         sendSensorData();
+        //////////////// TEMPORARY CODE ////////////////////
+        // chirp at most once per second if sending sensor data, this is helpful for debugging
+        if (0) {
+          unsigned long t = millis()%1000;
+          if (t < 110) {
+            beep(2000,20);
+          }
+        }
+        ////////////////////////////////////////////////////
         break;
       default:
           Serial.print("PKERR:BadSW:"); Serial.print(packetData[i]); 
@@ -1494,7 +1585,7 @@ void processPacketData() {
 
 
 
-long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
+
 
 void loop() {
 
@@ -1514,8 +1605,19 @@ void loop() {
   
   //Serial.print("Analog0="); Serial.println(p);
   if (p < 50) {
+    static long ReportTime = 0;
     stand();
-    Serial.println("Stand");
+    // in Stand mode we will also dump out all sensor values once per second to aid in debugging hardware issues
+    if (millis() > ReportTime) {
+          ReportTime = millis() + 1000;
+          Serial.println("Stand, Sensors:");
+          Serial.print(" A3="); Serial.print(analogRead(A3));
+          Serial.print(" A6="); Serial.print(analogRead(A6));
+          Serial.print(" A7="); Serial.print(analogRead(A7));
+          Serial.print(" Dist="); Serial.print(readUltrasonic());
+          Serial.println("");
+    }
+
   } else if (p < 150) {
     stand_90_degrees();
     Serial.println("AdjustMode");
@@ -1545,44 +1647,69 @@ void loop() {
   } else { // bluetooth mode
 
     int gotnewdata = receiveDataHandler();  // handle any new incoming data first
+    //Serial.print(gotnewdata); Serial.print(" ");
+
+      // if its been more than 1 second since we got a valid bluetooth command
+      // then for safety just stand still.
+
+      if (millis() > LastValidReceiveTime + 1000) {
+        if (millis() > LastValidReceiveTime + 50000) {
+          // this is just test code for now to study the loss of connection problem
+          // after 5 full seconds of not receiving a valid command, reset the bluetooth connection
+          Serial.println("Loss of Signal: resetting bluetooth");
+          beep(200,40); // loss of connection test
+          delay(100);
+          beep(400, 40);
+          delay(100);
+          beep(600, 40);
+          BlueTooth.begin(38400);
+          LastReceiveTime = LastValidReceiveTime = millis();
+          lastCmd = -1;  // for safety put it in stop mode
+        }
+        long losstime = millis() - LastValidReceiveTime;
+        Serial.print("LOS"); Serial.println(losstime);
+        return;
+      }
 
     if (gotnewdata == 0) {
       // we didn't receive any new instructions so repeat the last command unless it was binary
       // or unless we're in fight adjust mode
       if (lastCmd == -1) {
+        //Serial.print("-");
         return;
       }
+
+
       // fight submodes C and E should not be repeated without receiving
       // a packet because otherwise they'll zoom right to the end state instead
       // of giving the user a chance to make fine adjustments to position
       if (mode == MODE_FIGHT && (submode == SUBMODE_3 || submode == SUBMODE_4)) {
+        //Serial.print("f");
         return;
       }
 
+    } else {
+      LastReceiveTime = millis();
     }
     // Let set mode should also not be repeated
     if (mode == MODE_LEG) {
+      //Serial.print("l");
       return;
     }
     //
     // Now we're either repeating the last command, or reading the new bluetooth command
     //
-
-    //sendSensorData();   // this will send data once every 100 ms for A3, A6, A7
     
     switch(lastCmd) {
       case '?': //BlueTooth.println("Vorpal H12"); 
         break;
       case 'W': 
-        if (mode != MODE_WALK) beep(300);
         mode = MODE_WALK; 
         break;
       case 'F': 
-        if (mode != MODE_FIGHT) beep(900);
         mode = MODE_FIGHT; startedStanding = -1;
         break;
       case 'D': 
-        if (mode != MODE_DANCE) beep(1200);
         mode = MODE_DANCE; startedStanding = -1;
         break;
       case '1': 
@@ -1775,7 +1902,7 @@ void loop() {
         }
 
         if (millis() - startedStanding > BATTERYSAVER) {
-          //Serial.println("DET");
+          //Serial.print("DET LC=");Serial.write(lastCmd); Serial.println("");
           detach_all_servos();
         }
         break;
@@ -1786,7 +1913,7 @@ void loop() {
        
        default:
         Serial.print("BAD CHAR:"); Serial.write(lastCmd); Serial.println("");
-        beep(100,25);
+        beep(100,20);
     }  // end of switch
     
 
