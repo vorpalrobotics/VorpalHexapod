@@ -28,7 +28,7 @@
 //
 // For more technical informatio, see http://www.vorpalrobotics.com
 //
-// Version 4C Implements all Kickstarter Release 1 features.
+// Version 4D Implements all Kickstarter Release 1 features.
 //
 // NOTICE:
 // This software uses the Adafruit Servo Driver library. For more information
@@ -92,8 +92,8 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 // have!  If you hear buzzing or jittering, you went too far.
 // These values are good for MG90S style small metal gear servos
 
-#define SERVOMIN  185 // this is the 'minimum' pulse length count (out of 4096)
-#define SERVOMAX  545 // this is the 'maximum' pulse length count (out of 4096)
+#define SERVOMIN  190 // this is the 'minimum' pulse length count (out of 4096) [radj was 185/545]
+#define SERVOMAX  540 // this is the 'maximum' pulse length count (out of 4096)
 
 // Basic functions that move legs take a bit pattern
 // indicating which legs to move. The legs are numbered
@@ -1243,6 +1243,7 @@ SoftwareSerial BlueTooth(3,2);  // Bluetooth pins: TX=3=Yellow wire,  RX=2=Green
 int ServosDetached = 0;
 
 void attach_all_servos() {
+  Serial.print("A");
   for (int i = 0; i < 12; i++) {
     setServo(i, ServoPos[i]);
   }
@@ -1250,7 +1251,7 @@ void attach_all_servos() {
   return;
 }
 void detach_all_servos() {
-  //if (millis()%5000 < 10) beep(1200,10);
+  Serial.print("D");
   for (int i = 0; i < 16; i++) {
     pwm.setPin(i,0,false); // stop pulses which will quickly detach the servo
   }
@@ -1278,9 +1279,12 @@ void setup() {
   delay(250);
   BlueTooth.println("Vorpal H12 starting!");
 
+  delay(250);
+
   pwm.begin();  
   pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
-
+  delay(250);
+  
   stand();
   delay(600);
   beep(400);
@@ -1296,7 +1300,8 @@ void setServo(int servonum, int position) {
   int p = map(position,0,180,SERVOMIN,SERVOMAX);
   pwm.setPWM(servonum, 0, p);
   ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
-
+  // DEBUG: Uncomment the next line to debug setservo problems. It causes some lagginess due to all the printing
+  //Serial.print("SS:");Serial.print(servonum);Serial.print(":");Serial.println(position);
   if (0) {
     ServosDetached = 0;
     Serial.print("D");
@@ -1396,7 +1401,7 @@ void packetErrorChirp(char c) {
   packetState = P_WAITING_FOR_HEADER; // reset to initial state if any error occurs
 }
 
-int lastCmd = '?';
+int lastCmd = 's';
 int priorCmd = 0;
 int mode = MODE_WALK; // default
 int submode = SUBMODE_1;     // standard submode.
@@ -1449,7 +1454,7 @@ int receiveDataHandler() {
             packetLengthReceived = 0;
             packetState = P_READING_DATA;
 
-            Serial.print("L="); Serial.println(packetLength);
+            //Serial.print("L="); Serial.println(packetLength);
         }
         break;
       case P_READING_DATA:
@@ -1478,6 +1483,7 @@ int receiveDataHandler() {
             LastValidReceiveTime = millis();  // set the time we received a valid packet
             processPacketData();
             packetState = P_WAITING_FOR_HEADER;
+            //dumpPacket();   // comment this line out unless you are debugging packet transmissions
             return 1; // new data arrived!
           }
         }
@@ -1486,6 +1492,14 @@ int receiveDataHandler() {
   }
 
   return 0; // no new data arrived
+}
+
+void dumpPacket() { // this is purely for debugging, it can cause timing problems so only use it for debugging
+  Serial.print("DMP:");
+  for (int i = 0; i < packetLengthReceived; i++) {
+    Serial.write(packetData[i]); Serial.print("("); Serial.print(packetData[i]); Serial.print(")");
+  }
+  Serial.println("");
 }
 
 void processPacketData() {
@@ -1559,9 +1573,8 @@ void processPacketData() {
           return;  // toss the rest of the packet
         }
       case 'S':   // sensor request
-        // DRAFT: We're just going to return three unused analog ports for now
-        // for testing the concept. Later we'll add HC06 ultrasonic rangefinder and
-        // CMUCAM
+        // CMUCam seems to require it's own power supply so for now we're not doing that, will get it
+        // figured out by the time KS shipping starts.
         i++;  // right now this is a single byte command, later we will take options for which sensors to send
         sendSensorData();
         //////////////// TEMPORARY CODE ////////////////////
@@ -1691,7 +1704,7 @@ void loop() {
     } else {
       LastReceiveTime = millis();
     }
-    // Let set mode should also not be repeated
+    // Leg set mode should also not be repeated
     if (mode == MODE_LEG) {
       //Serial.print("l");
       return;
@@ -1898,13 +1911,15 @@ void loop() {
         } else if (mode == MODE_DANCE && submode == SUBMODE_4) {
           dance_hands(lastCmd);
         } else {
+            if (millis() - startedStanding > BATTERYSAVER) {
+              //Serial.print("DET LC=");Serial.write(lastCmd); Serial.println("");
+              detach_all_servos();
+              return;
+            }
           stand();
         }
 
-        if (millis() - startedStanding > BATTERYSAVER) {
-          //Serial.print("DET LC=");Serial.write(lastCmd); Serial.println("");
-          detach_all_servos();
-        }
+
         break;
 
       case 'a': // adjust mode

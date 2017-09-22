@@ -10,7 +10,6 @@
 
 #include <SPI.h>
 #include <SD.h>
-////#include <EEPROM.h>
 #include <Wire.h>
 #include <SoftwareSerial.h>
 
@@ -57,7 +56,7 @@
 // While playing back the internal beeper will make a low pitched beep
 // every couple of seconds.
 //
-// Erase has to be held for 2 full seconds. A long deep tone indicates the erase
+// Erase has to be held for several full seconds. A long deep tone indicates the erase
 // occurred.
 // If you record and stop, then record again, you will be adding on to the
 // prior recording unless you rewind first.
@@ -287,6 +286,20 @@ void setBeep(int f, int d) {
   BeepDur = d;
 }
 
+void eraseRecording() {
+      //debug("ERASING"); debugln();
+      // to erase the recording, close the file, remove the file, then re-open it again
+      //Serial.println("#SDERASE");
+      SDGamepadRecordFile.close();
+      SD.remove(SDGamepadRecordFileName) || Serial.println("#SDRMF");  // SD Erase Failed
+      SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
+      if (SDGamepadRecordFile) {
+        SDGamepadRecordFile.seek(0);  // in theory it should already be at 0, but not if the remove above failed for some reason.
+      } else {
+        Serial.println("#SDOF"); // SD Open Failed
+      }
+}
+
 void RecordPlayHandler() {
   // We save records consisting of a fixed length (currently 13 bytes).
   // This allows easy transmission by just putting the "V1" header out followed by the
@@ -406,17 +419,7 @@ void RecordPlayHandler() {
 
     ////////////////////////////////////////////////////////////
     case REC_ERASING:
-      //debug("ERASING"); debugln();
-      // to erase the recording, close the file, remove the file, then re-open it again
-      //Serial.println("#SDERASE");
-      SDGamepadRecordFile.close();
-      SD.remove(SDGamepadRecordFileName) || Serial.println("#SDRF");  // SD Remove Failed
-      SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
-      if (SDGamepadRecordFile) {
-        SDGamepadRecordFile.seek(0);  // in theory it should already be at 0, but not if the remove above failed for some reason.
-      } else {
-        Serial.println("#SDOF"); // SD Open Failed
-      }
+      eraseRecording();
       break;
       
     case REC_REWINDING:
@@ -702,7 +705,7 @@ void loop() {
       if (millis() - curmatrixstarttime < 50) {
         setBeep(BF_ERASE, BD_SHORT);
       } else if (millis() - curmatrixstarttime > 2000) { // long tap required to erase for safety
-        RecState = REC_ERASING;
+        eraseRecording();
         setBeep(BF_ERASE, BD_LONG);
       }
       break;
