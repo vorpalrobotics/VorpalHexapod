@@ -29,7 +29,7 @@
 // For more technical informatio, see http://www.vorpalrobotics.com
 //
 
-// V1r8b
+// V1r8c
 
 // NOTICE:
 // This software uses the Adafruit Servo Driver library. For more information
@@ -1301,8 +1301,8 @@ void setServo(int servonum, int position) {
   //Serial.print("SS:");Serial.print(servonum);Serial.print(":");Serial.println(position);
 }
 
-#define ULTRAOUTPUTPIN 7
-#define ULTRAINPUTPIN  8
+#define ULTRAOUTPUTPIN 7      // TRIG
+#define ULTRAINPUTPIN  8      // ECHO
 
 unsigned int readUltrasonic() {  // returns number of centimeters from ultrasonic rangefinder
 
