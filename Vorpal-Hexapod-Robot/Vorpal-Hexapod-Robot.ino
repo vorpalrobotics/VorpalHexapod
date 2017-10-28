@@ -28,8 +28,9 @@
 //
 // For more technical informatio, see http://www.vorpalrobotics.com
 //
-// Version 4D Implements all Kickstarter Release 1 features.
-//
+
+// V1r8b
+
 // NOTICE:
 // This software uses the Adafruit Servo Driver library. For more information
 // see www.adafruit.com
@@ -514,7 +515,7 @@ void gait_sidestep(int left, long timeperiod) {
 #endif
 
 unsigned short KneeTarget[NUM_LEGS];
-unsigned short HipTargetLeft, HipTargetRight;
+unsigned short HipTarget[NUM_LEGS];
 
 void fight_mode(char dpad, int mode, long timeperiod) {
 
@@ -531,29 +532,32 @@ void fight_mode(char dpad, int mode, long timeperiod) {
         // do nothing in stop mode, just hold current position
         for (int i = 0; i < NUM_LEGS; i++) {
           KneeTarget[i] = ServoPos[i+NUM_LEGS];
+          HipTarget[i] = ServoPos[i];
         }
-        HipTargetRight = ServoPos[0];  // all the hips have the same target so just pick one
-        HipTargetLeft = ServoPos[LEFT_START];
         break;
       case 'w':  // reset to standard standing position, resets both hips and knees
         for (int i = 0; i < NUM_LEGS; i++) {
           KneeTarget[i] = KNEE_STAND;
+          HipTarget[i] = 90;
         }
-        HipTargetLeft = HipTargetRight = 90;
         break;
       case 'f': // swing hips forward, mirrored
-        HipTargetRight = 55;
-        HipTargetLeft = 180 - HipTargetRight;
+        HipTarget[5] = HipTarget[4] = HipTarget[3] = 125;
+        HipTarget[0] = HipTarget[1] = HipTarget[2] = 55;
         break;
       case 'b': // move the knees back up to standing position, leave hips alone
-        HipTargetRight = 125;
-        HipTargetLeft = 180 - HipTargetRight;
+        HipTarget[5] = HipTarget[4] = HipTarget[3] = 55;
+        HipTarget[0] = HipTarget[1] = HipTarget[2] = 125;
         break;
       case 'l':
-        HipTargetLeft = HipTargetRight = 170;
+        for (int i = 0; i < NUM_LEGS; i++) {
+          HipTarget[i] = 170;
+        }
         break;
       case 'r':
-        HipTargetLeft = HipTargetRight = 10;
+        for (int i = 0; i < NUM_LEGS; i++) {
+          HipTarget[i] = 10;
+        }
         break;
     }
     
@@ -572,15 +576,14 @@ void fight_mode(char dpad, int mode, long timeperiod) {
         // do nothing in stop mode, just hold current position
         for (int i = 0; i < NUM_LEGS; i++) {
           KneeTarget[i] = ServoPos[i+NUM_LEGS];
+          HipTarget[i] = ServoPos[i];
         }
-        HipTargetLeft = ServoPos[0];  // all the hips have the same target so just pick one
-        HipTargetRight = ServoPos[LEFT_START];
         break;
       case 'w':  // reset to standard standing position, resets both hips and knees
         for (int i = 0; i < NUM_LEGS; i++) {
           KneeTarget[i] = KNEE_STAND;
+          HipTarget[i] = 90;
         }
-        HipTargetLeft = HipTargetRight = 90;
         break;
       case 'f': // move knees into forward crouch, leave hips alone
 
@@ -634,7 +637,7 @@ void fight_mode(char dpad, int mode, long timeperiod) {
   if (mode == SUBMODE_4 || mode == SUBMODE_3) { // incremental moves
 
     // move servos toward their targets
-#define MOVEINCREMENT 7  // degrees per transmission time delay
+#define MOVEINCREMENT 10  // degrees per transmission time delay
 
     for (int i = 0; i < NUM_LEGS; i++) {
       int h, k;
@@ -655,11 +658,8 @@ void fight_mode(char dpad, int mode, long timeperiod) {
 
       setKnee(i, k);
 
-      if (i < LEFT_START) {
-        diff = HipTargetRight - h;
-      } else {
-        diff = HipTargetLeft - h;
-      }
+      diff = HipTarget[i] - h;
+
       if (diff <= -MOVEINCREMENT) {
         // the hip has a greater value than the target
         h -= MOVEINCREMENT;
@@ -668,11 +668,7 @@ void fight_mode(char dpad, int mode, long timeperiod) {
         h += MOVEINCREMENT;
       } else {
         // the knee is within MOVEINCREMENT of the target so just go to target
-        if (i < LEFT_START) {
-          h = HipTargetRight;
-        } else {
-          h = HipTargetLeft;
-        }
+        h = HipTarget[i];
       }
         
       setHipRaw(i, h);
@@ -1251,7 +1247,7 @@ void attach_all_servos() {
   return;
 }
 void detach_all_servos() {
-  Serial.print("D");
+  //Serial.print("D");
   for (int i = 0; i < 16; i++) {
     pwm.setPin(i,0,false); // stop pulses which will quickly detach the servo
   }
@@ -1272,6 +1268,7 @@ void setup() {
   digitalWrite(A1, HIGH);
   digitalWrite(A2, LOW);
 
+  delay(500); // give hardware a chance to come up and stabalize
   Serial.begin(9600);
   BlueTooth.begin(38400);
 
@@ -1279,7 +1276,7 @@ void setup() {
   delay(250);
   BlueTooth.println("Vorpal H12 starting!");
 
-  delay(250);
+  delay(500);
 
   pwm.begin();  
   pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
@@ -1302,15 +1299,6 @@ void setServo(int servonum, int position) {
   ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
   // DEBUG: Uncomment the next line to debug setservo problems. It causes some lagginess due to all the printing
   //Serial.print("SS:");Serial.print(servonum);Serial.print(":");Serial.println(position);
-  if (0) {
-    ServosDetached = 0;
-    Serial.print("D");
-    for (int i = 0; i < 12; i++) {
-      if (i != servonum && ServoPos[i]>=0 && ServoPos[i]<=180) {
-        pwm.setPWM(i, 0, map(ServoPos[i],0,180,SERVOMIN,SERVOMAX));
-      }
-    }
-  }
 }
 
 #define ULTRAOUTPUTPIN 7
@@ -1509,7 +1497,7 @@ void processPacketData() {
       case 'W': 
       case 'F':
       case 'D':
-        // new gamepad mode
+        // gamepad mode change
         if (i <= packetLengthReceived - 3) {
           mode = packetData[i];
           submode = packetData[i+1];
@@ -1540,6 +1528,51 @@ void processPacketData() {
           // again, we're short on bytes for this command so something is amiss
           beep(BF_ERROR, BD_MED);
           Serial.print("PKERR:B:Short:");Serial.print(i);Serial.print(":");Serial.println(packetLengthReceived);
+          return;  // toss the rest of the packet
+        }
+        break;
+        
+      case 'R': // Raw Servo Move Command (from Scratch most likely)
+
+#define RAWSERVOPOS 0
+#define RAWSERVOADD 1
+#define RAWSERVOSUB 2
+#define RAWSERVONOMOVE 255
+#define RAWSERVODETACH 254
+        // Raw servo command is 18 bytes, command R, second byte is type of move, next 16 are all the servo ports positions
+        // note: this can move more than just leg servos, it can also access the four ports beyond the legs so
+        // you could make active attachments with servo motors, or you could control LED light brightness, etc.
+        // move types are: 0=set to position, 1=add to position, 2=subtract from position
+        // the 16 bytes of movement data is either a number from 1 to 180 meaning a position, or the
+        // number 255 meaning "no move, stay at prior value", or 254 meaning "cut power to servo"
+        if (i <= packetLengthReceived - 18) {
+            //Serial.println("Got Raw Servo with enough bytes left");
+            int movetype = packetData[i+1];
+            //Serial.print(" Movetype="); Serial.println(movetype);
+            for (int servo = 0; servo < 16; servo++) {
+              int pos = packetData[i+2+servo];
+              if (pos == RAWSERVONOMOVE) {
+                //Serial.print("Port "); Serial.print(servo); Serial.println(" NOMOVE");
+                continue;
+              }
+              if (pos == RAWSERVODETACH) {
+                    pwm.setPin(servo,0,false); // stop pulses which will quickly detach the servo
+                    //Serial.print("Port "); Serial.print(servo); Serial.println(" detached");
+                    continue;
+              }
+              if (movetype == RAWSERVOADD) {
+                pos += ServoPos[servo];
+              } else if (movetype == RAWSERVOSUB) {
+                pos = ServoPos[servo] - pos;
+              }
+              //Serial.print("Servo "); Serial.print(servo); Serial.print(" pos "); Serial.println(pos);
+              setServo(servo, pos);
+            }
+            i += 18; // length of raw servo move is 18 bytes
+        } else {
+          // again, we're short on bytes for this command so something is amiss
+          beep(BF_ERROR, BD_MED);
+          Serial.print("PKERR:R:Short:");Serial.print(i);Serial.print(":");Serial.println(packetLengthReceived);
           return;  // toss the rest of the packet
         }
         break;
