@@ -7,7 +7,10 @@
 // You may use this work for noncommercial purposes without cost.
 // For information on licensing this work for commercial purposes, please send email to support@vorpalrobotics.com
 //
-// V1r8c
+
+char *Version = "#V1r8d";
+
+int debugmode = 0;   // make this 1 for debug mode. NOTE: debug mode may make Scratch unstable, don't leave it on!
 
 #include <SPI.h>
 #include <SD.h>
@@ -268,7 +271,7 @@ int RecState = REC_STOPPED;
 long RecNextEventTime = 0; // next time to record or play an event if using record/play mode
 
 int count = 0;  // used to limit debug output
-int debugmode = 0;
+
 
 
 
@@ -445,10 +448,13 @@ void RecordPlayHandler() {
 
 void setup() {
   // put your setup code here, to run once:
+  delay(500);
 
   BlueTooth.begin(38400);
   Serial.begin(9600);
-
+  if (debugmode) {
+    Serial.println(Version);
+  }
   pinMode(A0, OUTPUT);  // extra ground for additional FTDI port
   digitalWrite(A0, LOW);
   pinMode(VCCA1, OUTPUT);
@@ -553,7 +559,7 @@ const int chipSelect = 10;
   }
 
 }
-  /////////////////////////////////////////////////////////////////////////////////////////
+  // END OF SD DEBUG CODE///////////////////////////////////////////////////////////////////////////////////////
   
   if (!SD.begin(10)) {
     Serial.println("#SDBF");    // SD Begin Failed
@@ -717,7 +723,9 @@ int handleSerialInput() {
 
 void loop() {
   int matrix = scanmatrix();
-  //Serial.print("#MA:");Serial.println(matrix);
+  if (debugmode && matrix != -1) {
+    Serial.print("#MA:");Serial.println(matrix);
+  }
 
   if (priormatrix != matrix) {
     curmatrixstarttime = millis();  // used to detect long tap
@@ -819,6 +827,10 @@ void loop() {
   priormatrix = matrix;
   
   CurDpad = decode_button(analogRead(DpadPin));
+
+  if (debugmode && CurDpad != 's') {
+    Serial.print("#DPAD="); Serial.println(CurDpad);
+  }
 
   //
   // The following code handles the Scratch recording to a mode button feature
