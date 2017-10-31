@@ -1259,6 +1259,18 @@ void setup() {
   pinMode(BeeperPin, OUTPUT);
   beep(200);
   pinMode(13, OUTPUT);
+  // make a characteristic flashing pattern to indicate the robot code is loaded (as opposed to the gamepad)
+  // There will be a brief flash after hitting the RESET button, then a long flash followed by a short flash.
+  // The gamepaid is brief flash on reset, short flash, long flash.
+  pinMode(13, OUTPUT);
+  digitalWrite(13, HIGH);
+  delay(400);
+  digitalWrite(13, LOW);
+  delay(200);
+  digitalWrite(13, HIGH);
+  delay(200);
+  digitalWrite(13,LOW);
+  ///////////////////// end of indicator flashing
   pinMode(A1, OUTPUT);
   pinMode(A2, OUTPUT);
   
@@ -1699,10 +1711,10 @@ void loop() {
       // then for safety just stand still.
 
       if (millis() > LastValidReceiveTime + 1000) {
-        if (millis() > LastValidReceiveTime + 50000) {
-          // this is just test code for now to study the loss of connection problem
-          // after 5 full seconds of not receiving a valid command, reset the bluetooth connection
+        if (millis() > LastValidReceiveTime + 15000) {
+          // after 15 full seconds of not receiving a valid command, reset the bluetooth connection
           Serial.println("Loss of Signal: resetting bluetooth");
+          // Make a three tone chirp to indicate reset
           beep(200,40); // loss of connection test
           delay(100);
           beep(400, 40);

@@ -447,8 +447,16 @@ void RecordPlayHandler() {
 }
 
 void setup() {
-  // put your setup code here, to run once:
-  delay(500);
+  // make a characteristic flashing pattern to indicate the gamepad code is loaded.
+  pinMode(13, OUTPUT);
+  digitalWrite(13, HIGH);
+  delay(200);
+  digitalWrite(13, LOW);
+  delay(200);
+  digitalWrite(13, HIGH);
+  delay(400);
+  digitalWrite(13,LOW);
+  // after this point you can't flash the led on pin 13 because we're using it for SD card
 
   BlueTooth.begin(38400);
   Serial.begin(9600);
@@ -463,103 +471,6 @@ void setup() {
   digitalWrite(VCCA1, HIGH);
   pinMode(10, OUTPUT);
   digitalWrite(10, HIGH); // chip select for SD card
-  /////////////////////////////////////////////////////////////////////////////////////////
-  ////////// SD DEBUG CODE
-if (0) {
-// set up variables using the SD utility library functions:
-Sd2Card card;
-SdVolume volume;
-SdFile root;
-
-const int chipSelect = 10;  
-
-  Serial.print("\nInitializing SD card...");
-
-  // we'll use the initialization code from the utility libraries
-  // since we're just testing if the card is working!
-  if (!card.init(SPI_HALF_SPEED, chipSelect)) {
-    Serial.println("initialization failed.");
-    return;
-  } else {
-    Serial.println("Wiring is correct/card is present.");
-  }
-
-  // print the type of card
-  Serial.print("\nCard: ");
-  switch (card.type()) {
-    case SD_CARD_TYPE_SD1:
-      Serial.println("SD1");
-      break;
-    case SD_CARD_TYPE_SD2:
-      Serial.println("SD2");
-      break;
-    case SD_CARD_TYPE_SDHC:
-      Serial.println("SDHC");
-      break;
-    default:
-      Serial.println("Unk");
-  }
-
-  // Now we will try to open the 'volume'/'partition' - it should be FAT16 or FAT32
-  if (!volume.init(card)) {
-    Serial.println("no FAT16/FAT32 partition.");
-    return;
-  }
-
-
-  // print the type and size of the first FAT-type volume
-  uint32_t volumesize;
-  Serial.print("\nVol is FAT");
-  Serial.println(volume.fatType(), DEC);
-  Serial.println();
-
-  volumesize = volume.blocksPerCluster();    // clusters are collections of blocks
-  volumesize *= volume.clusterCount();       // we'll have a lot of clusters
-  volumesize *= 512;                            // SD card blocks are always 512 bytes
-  Serial.print("Vol size (b): ");
-  Serial.println(volumesize);
-
-
-  Serial.println("\nFiles: ");
-  root.openRoot(volume);
-
-    // list all files in the card with date and size
-  root.ls(LS_R | LS_DATE | LS_SIZE);
-
-  // open the file. note that only one file can be open at a time,
-  // so you have to close this one before opening another.
-  File myFile = SD.open("test.txt", FILE_WRITE);
-
-  // if the file opened okay, write to it:
-  if (myFile) {
-    Serial.print("Writing");
-    myFile.println("testing 1, 2, 3.");
-    // close the file:
-    myFile.close();
-    Serial.println("done.");
-  } else {
-    // if the file didn't open, print an error:
-    Serial.println("error opening test.txt");
-  }
-
-  // re-open the file for reading:
-  myFile = SD.open("test.txt");
-  if (myFile) {
-    Serial.println("test.txt:");
-
-    // read from the file until there's nothing else in it:
-    while (myFile.available()) {
-      Serial.write(myFile.read());
-    }
-    // close the file:
-    myFile.close();
-  } else {
-    // if the file didn't open, print an error:
-    Serial.println("error opening test");
-  }
-
-}
-  // END OF SD DEBUG CODE///////////////////////////////////////////////////////////////////////////////////////
   
   if (!SD.begin(10)) {
     Serial.println("#SDBF");    // SD Begin Failed
@@ -737,6 +648,9 @@ void loop() {
 
   int serialinput = handleSerialInput();  // this would be commands coming from scratch over the hardware serial port
 
+  if (serialinput && debugmode) {
+    Serial.print("#SERINP="); Serial.println(serialinput);
+  }
   // if the robot sends something back to us, print it to the serial port
   // this is likely to be sensor data for scratch or debugging info
   
@@ -748,10 +662,13 @@ void loop() {
   // the button pad for a moment, and also disable debug printing to the serial port
   if (serialinput > 0) {
     suppressButtonsUntil = millis() + 1000;
+    if (debugmode) {
+      Serial.println("#SUP");
+    }
   }
 
   if (millis() < suppressButtonsUntil) {
-    return; // we've given control to the serial port for the next few seconds
+    return; // we've given control to the serial port (Scratch) for the next one second
   }
 
   // if we get here then scratch appears not to have control.
@@ -762,7 +679,7 @@ void loop() {
     // recordings always start with W, D, or F indicating a mode button). So, if we get here
     // then scratch seems to have been recording and never closed off the recording session.
     
-    //StopScratchRecording();
+    //StopScratchRecording();  // this seemed to be causing trouble ... for further study. if scratch user properly programmed it's not needed
   }
 
   switch (matrix) {
@@ -897,6 +814,9 @@ void loop() {
     // Right now the 
     //
 
+    if (debugmode) {
+      Serial.print("#S="); Serial.print(CurCmd); Serial.print(CurSubCmd); Serial.println(CurDpad);
+    }
     BlueTooth.print("V1"); // Vorpal hexapod radio protocol header version 1
     int eight=8;
     BlueTooth.write(eight);
@@ -922,13 +842,6 @@ void loop() {
     
     setBeep(0,0); // clear the current beep because it's been sent now
     
-    if (verbose) {
-      Serial.print("#SENT:");
-      Serial.print(CurCmd);
-      Serial.print(CurSubCmd);
-      Serial.print(CurDpad);
-      Serial.println("");
-    }
     NextTransmitTime = millis() + 100;
   }
 
