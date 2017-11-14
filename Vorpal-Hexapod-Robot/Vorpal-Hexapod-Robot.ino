@@ -1450,6 +1450,9 @@ int receiveDataHandler() {
         break;
       case P_WAITING_FOR_LENGTH:
         { // need scope for local variables
+            if (c > MAXPACKETDATA){
+              return 0;
+            }
             packetLength = c;
             packetLengthReceived = 0;
             packetState = P_READING_DATA;
