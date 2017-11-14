@@ -1451,7 +1451,8 @@ int receiveDataHandler() {
       case P_WAITING_FOR_LENGTH:
         { // need scope for local variables
             if (c > MAXPACKETDATA){
-              return 0;
+              packetErrorChirp(c);
+              break;
             }
             packetLength = c;
             packetLengthReceived = 0;
