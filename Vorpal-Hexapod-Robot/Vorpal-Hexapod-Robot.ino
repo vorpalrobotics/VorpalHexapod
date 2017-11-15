@@ -1391,8 +1391,8 @@ int pulselen = SERVOMIN;
 
 #define MAXPACKETDATA 48
 unsigned char packetData[MAXPACKETDATA];
-int packetLength = 0;
-int packetLengthReceived = 0;
+unsigned int packetLength = 0;
+unsigned int packetLengthReceived = 0;
 int packetState = P_WAITING_FOR_HEADER;
 
 void packetErrorChirp(char c) {
@@ -1412,15 +1412,19 @@ int receiveDataHandler() {
   while (BlueTooth.available() > 0) {
     unsigned int c = BlueTooth.read();
 
+    // uncomment the following lines if you're doing some serious packet debugging, but be aware this will take up so
+    // much time you will drop some data. I would suggest slowing the gamepad/scratch sending rate to 4 packets per
+    // second or slower if you want to use this.
     //Serial.print(millis());
     //Serial.print("'"); Serial.write(c); Serial.print("' ("); Serial.print((int)c); 
     //Serial.print(")S="); Serial.print(packetState); Serial.print(" a="); Serial.print(BlueTooth.available()); Serial.println("");
     //Serial.print(millis()); Serial.println("");
+    
     switch (packetState) {
       case P_WAITING_FOR_HEADER:
         if (c == 'V') {
           packetState = P_WAITING_FOR_VERSION;
-          //Serial.print("GOTV ");
+          //Serial.print("GOT V ");
         } else {
           // may as well flush up to the next header
           int flushcount = 0;
@@ -1436,7 +1440,7 @@ int receiveDataHandler() {
       case P_WAITING_FOR_VERSION:
         if (c == '1') {
           packetState = P_WAITING_FOR_LENGTH;
-          //Serial.print("G1 ");
+          //Serial.print("GOT 1 ");
         } else if (c == 'V') {
           // this can actually happen if the checksum was a 'V' and some noise caused a
           // flush up to the checksum's V, that V would be consumed by state WAITING FOR HEADER
@@ -1446,11 +1450,21 @@ int receiveDataHandler() {
           // do nothing here
         } else {
           packetErrorChirp(c);
+          packetState = P_WAITING_FOR_HEADER; // go back to looking for a 'V' again
         }
         break;
       case P_WAITING_FOR_LENGTH:
         { // need scope for local variables
             packetLength = c;
+            if (packetLength > MAXPACKETDATA) {
+              // this can happen if there's either a bug in the gamepad/scratch code, or if a burst of
+              // static happened to hit right when the length was being transmitted. In either case, this
+              // packet is toast so abandon it.
+              packetErrorChirp(c);
+              Serial.print("Bad Length="); Serial.println(c);
+              packetState = P_WAITING_FOR_HEADER;
+              return 0;
+            }
             packetLengthReceived = 0;
             packetState = P_READING_DATA;
 
@@ -1458,6 +1472,13 @@ int receiveDataHandler() {
         }
         break;
       case P_READING_DATA:
+        if (packetLengthReceived >= MAXPACKETDATA) {
+          // well this should never, ever happen but I'm being paranoid here.
+          Serial.println("ERROR: PacketDataLen out of bounds!");
+          packetState = P_WAITING_FOR_HEADER;  // abandon this packet
+          packetLengthReceived = 0;
+          return 0;
+        }
         packetData[packetLengthReceived++] = c;
         if (packetLengthReceived == packetLength) {
           packetState = P_WAITING_FOR_CHECKSUM;
@@ -1468,7 +1489,7 @@ int receiveDataHandler() {
       case P_WAITING_FOR_CHECKSUM:
 
         {
-          unsigned int sum = packetLength;
+          unsigned int sum = packetLength;  // the length byte is part of the checksum
           for (int i = 0; i < packetLength; i++) {
             // uncomment the next line if you need to see the packet bytes
             //Serial.print(packetData[i]);Serial.print("-");
@@ -1478,7 +1499,9 @@ int receiveDataHandler() {
 
           if (sum != c) {
             packetErrorChirp(c);
-            Serial.print("cs fail "); Serial.print(sum); Serial.print("!="); Serial.print((int)c);Serial.print("len=");Serial.println(packetLength);
+            Serial.print("CHECKSUM FAIL "); Serial.print(sum); Serial.print("!="); Serial.print((int)c);
+            Serial.print("len=");Serial.println(packetLength);
+            packetState = P_WAITING_FOR_HEADER;  // giving up on this packet, let's wait for another
           } else {
             LastValidReceiveTime = millis();  // set the time we received a valid packet
             processPacketData();
