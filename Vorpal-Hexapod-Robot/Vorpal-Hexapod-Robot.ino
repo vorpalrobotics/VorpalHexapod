@@ -1,8 +1,8 @@
 
 ////////////////////////////////////////////////////////////////////////////////
-//           Vorpal Combat Hexapod Control Program Version 4D1
+//           Vorpal Combat Hexapod Control Program  V1R8h
 //
-// Copyright (C) 2017 Vorpal Robotics, LLC.
+// Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
 //
 // This work is licensed under the Creative Commons 
 // Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -11,11 +11,12 @@
 // 
 // You may use this work for noncommercial purposes without cost as long as you give us
 // credit for our work (attribution) and any improvements you make are licensed in a way
-// no more restrictive than our license. See the license for more details.
+// no more restrictive than our license.
 //
 // For example, you may build a Hexapod yourself and use this code for your own experiments,
 // or you can build one and give the hexapod running this code to a friend, as long as you
 // don't charge for it.
+//
 // If you have a question about whether a contemplated use is in compliance with the license,
 // just ask us. We're friendly. Email us at support@vorpalrobotics.com
 //
@@ -24,12 +25,9 @@
 // something fair.
 //
 // This is the program that goes on the Robot, not the gamepad!
-// It is compatable with the Vorpal Combat Hexapod Gamepad software version 4C.
 //
 // For more technical informatio, see http://www.vorpalrobotics.com
 //
-
-// V1r8c
 
 // NOTICE:
 // This software uses the Adafruit Servo Driver library. For more information
@@ -78,23 +76,39 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <SPI.h>
 #include <Pixy.h>
 
+
+int FreqMult = 2;   // PWM frequency multiplier, use 1 for analog servos and up to about 3 for digital.
+                    // The recommended setting for digital is 2 (probably safe for all digital servos)
+                    // A shunt between Nano D5 and D6 will set this to "1" in setup, this allows you
+                    // to select digital servo mode (2) or analog servo mode (1) using a shunt 
+                    // or short jumper wire.
+
+// NOTE: For digital servos such as Genuine Tower Pro MG90S or Turnigy MG90S we recommend putting
+// a small O-ring on the hip servo shaft before putting the servo horn on. This will reduce or eliminate
+// "hunting" behavior which can cause the servo to rapidly oscillate around the target position. Adjusting
+// the servo horn screw tightness to be just tight enough to stop any hunting is recommended.
+
 Pixy CmuCam5; // cmu cam 5 support as an SPI device
 
-// called this way, it uses the default address 0x40
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+#define SERVO_IIC_ADDR  (0x40)
+Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR); 
 
-#define BeeperPin 4   // digital 4 used for beeper
-#define BF_ERROR  100 // deep beep for error situations
-#define BD_MED    50  // medium long beep duration
+#define BeeperPin 4           // digital 4 used for beeper
+#define ServoTypePin 5        // 5 is used to signal digital vs. analog servo mode
+#define ServoTypeGroundPin 6  // 6 provides a ground to pull 5 low if digital servos are in use
+#define BF_ERROR  100         // deep beep for error situations
+#define BD_MED    50          // medium long beep duration
 
 // Depending on your servo make, the pulse width min and max may vary, you 
 // want these to be as small/large as possible without hitting the hard stop
 // for max range. You'll have to tweak them as necessary to match the servos you
 // have!  If you hear buzzing or jittering, you went too far.
-// These values are good for MG90S style small metal gear servos
+// These values are good for MG90S clone small metal gear servos and Genuine Tower Pro MG90S
 
-#define SERVOMIN  190 // this is the 'minimum' pulse length count (out of 4096) [radj was 185/545]
-#define SERVOMAX  540 // this is the 'maximum' pulse length count (out of 4096)
+#define PWMFREQUENCY (60*FreqMult)
+
+#define SERVOMIN  (190*FreqMult) // this is the 'minimum' pulse length count (out of 4096)
+#define SERVOMAX  (540*FreqMult) // this is the 'maximum' pulse length count (out of 4096)
 
 // Basic functions that move legs take a bit pattern
 // indicating which legs to move. The legs are numbered
@@ -145,12 +159,12 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 #define KNEE_UP_MAX 180
 #define KNEE_UP    150
-#define KNEE_RELAX  120  // 80
-#define KNEE_NEUTRAL 90 // 130
+#define KNEE_RELAX  120  
+#define KNEE_NEUTRAL 90 
 #define KNEE_CROUCH 110
 #define KNEE_HALF_CROUCH 80
 #define KNEE_STAND 30
-#define KNEE_DOWN  30    // was 40
+#define KNEE_DOWN  30   
 #define KNEE_TIPTOES 5
 #define KNEE_FOLD 170
 
@@ -211,7 +225,7 @@ void beep(int f, int t) {
   }
 }
 
-void beep(int f) {
+void beep(int f) {  // if no second param is given we'll default to 250 milliseconds for the beep
   beep(f, 250);
 }
 
@@ -1023,10 +1037,10 @@ void random_gait(int timingfactor) {
     case G_DANCE:
       stand();
       for (int i = 0; i < NUM_LEGS; i++) 
-        setHipRaw(i, 150);
+        setHipRaw(i, 145);
       delay(350);
       for (int i = 0; i < NUM_LEGS; i++)
-        setHipRaw(i, 30);
+        setHipRaw(i, 35);
       delay(350);
       break;
     case G_BOOGIE:
@@ -1224,12 +1238,12 @@ void boogie_woogie(int legs_flat, int submode, int timingfactor) {
   switch (phase) {
     case 0:
       for (int i = 0; i < NUM_LEGS; i++) 
-        setHipRaw(i, 150);
+        setHipRaw(i, 140);
       break;
       
     case 1: 
       for (int i = 0; i < NUM_LEGS; i++)
-        setHipRaw(i, 30);
+        setHipRaw(i, 40);
       break;
   }
 }
@@ -1249,30 +1263,39 @@ void attach_all_servos() {
 void detach_all_servos() {
   //Serial.print("D");
   for (int i = 0; i < 16; i++) {
-    pwm.setPin(i,0,false); // stop pulses which will quickly detach the servo
+    servoDriver.setPin(i,0,false); // stop pulses which will quickly detach the servo
   }
   ServosDetached = 1;
+}
+
+void resetServoDriver() {
+
+  servoDriver.begin(); 
+  servoDriver.setPWMFreq(PWMFREQUENCY);  // Analog servos run at ~60 Hz updates
 }
 
 void setup() {
 
   pinMode(BeeperPin, OUTPUT);
   beep(200);
-  pinMode(13, OUTPUT);
   // make a characteristic flashing pattern to indicate the robot code is loaded (as opposed to the gamepad)
   // There will be a brief flash after hitting the RESET button, then a long flash followed by a short flash.
   // The gamepaid is brief flash on reset, short flash, long flash.
   pinMode(13, OUTPUT);
   digitalWrite(13, HIGH);
-  delay(400);
+  delay(300);
   digitalWrite(13, LOW);
-  delay(200);
+  delay(150);
   digitalWrite(13, HIGH);
-  delay(200);
+  delay(150);
   digitalWrite(13,LOW);
   ///////////////////// end of indicator flashing
   pinMode(A1, OUTPUT);
   pinMode(A2, OUTPUT);
+  pinMode(ServoTypeGroundPin, OUTPUT);    // will provide a ground for shunt on D6 to indicate digital servo mode
+  digitalWrite(ServoTypeGroundPin, LOW);
+  pinMode(ServoTypePin, INPUT_PULLUP);    // if high we default to analog servo mode, if pulled to ground
+                                          // (via a shunt to D6) then we'll double the PWM frequency for digital servos
   
   digitalWrite(13, LOW);
   
@@ -1280,7 +1303,7 @@ void setup() {
   digitalWrite(A1, HIGH);
   digitalWrite(A2, LOW);
 
-  delay(500); // give hardware a chance to come up and stabalize
+  delay(300); // give hardware a chance to come up and stabalize
   Serial.begin(9600);
   BlueTooth.begin(38400);
 
@@ -1288,17 +1311,30 @@ void setup() {
   delay(250);
   BlueTooth.println("Vorpal H12 starting!");
 
-  delay(500);
+  delay(250);
 
-  pwm.begin();  
-  pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
+  if (digitalRead(6) == LOW) { // Analog servo mode
+    FreqMult = 1;  // 2 is safe for just about any digital servo and makes them
+                   // work a bit better. 3 is usually fine too but
+                   // let's not push it.
+  }
+                   
+  // Chirp a number of times equal to FreqMult so we confirm what servo mode is in use
+  for (int i = 0; i < FreqMult; i++) {
+    beep(800, 50);
+    delay(100);
+  }
+
+  resetServoDriver();
   delay(250);
   
   stand();
-  delay(600);
+  
+  delay(300);
+  
   beep(400);
 
-  //CmuCam5.init();
+  //CmuCam5.init();   // we're still working out some issues with CmuCam5
 
   yield();
 }
@@ -1306,9 +1342,11 @@ void setup() {
 
 
 void setServo(int servonum, int position) {
+  int origpos = position;
+  
   int p = map(position,0,180,SERVOMIN,SERVOMAX);
-  pwm.setPWM(servonum, 0, p);
-  ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
+  servoDriver.setPWM(servonum, 0, p);
+  ServoPos[servonum] = origpos;  // keep data on where the servo was last commanded to go
   // DEBUG: Uncomment the next line to debug setservo problems. It causes some lagginess due to all the printing
   //Serial.print("SS:");Serial.print(servonum);Serial.print(":");Serial.println(position);
 }
@@ -1591,7 +1629,7 @@ void processPacketData() {
                 continue;
               }
               if (pos == RAWSERVODETACH) {
-                    pwm.setPin(servo,0,false); // stop pulses which will quickly detach the servo
+                    servoDriver.setPin(servo,0,false); // stop pulses which will quickly detach the servo
                     //Serial.print("Port "); Serial.print(servo); Serial.println(" detached");
                     continue;
               }
@@ -1666,27 +1704,63 @@ void processPacketData() {
 
 
 
+int flash(int t) {
+  // the following code will return HIGH for t milliseconds
+  // followed by LOW for t milliseconds.
+  return (millis()%(2*t)) > t;
+}
 
+//
+// Short power dips can cause the servo driver to put itself to sleep
+// the checkForServoSleep() function uses IIC protocol to ask the servo
+// driver if it's asleep. If it is, this function wakes it back up.
+// You'll see the robot stutter step for about half a second and a chirp
+// is output to indicate what happened.
+// This happens more often on low battery conditions. When the battery gets low
+// enough, however, this code will not be able to wake it up again.
+// If your robot constantly resets even though the battery is fully charged, you
+// may have too much friction on the leg hinges, or you may have a bad servo that's
+// drawing more power than usual. A bad BEC can also cause the issue.
+//
+long freqWatchDog = 0;
+
+void checkForServoSleep() {
+
+  if (millis() > freqWatchDog) {
+    //if (servoDriver.read8(0) & 16) { // servo driver board is in sleep mode, probably because of a brown out condition
+
+    // See if the servo driver module went to sleep, probably due to a short power dip
+    Wire.beginTransmission(SERVO_IIC_ADDR);
+    Wire.write(0);  // address 0 is the MODE1 location of the servo driver, see documentation on the PCA9685 chip for more info
+    Wire.endTransmission();
+    Wire.requestFrom((uint8_t)SERVO_IIC_ADDR, (uint8_t)1);
+    int mode1 = Wire.read();
+    if (mode1 & 16) { // the fifth bit up from the bottom is 1 if controller was asleep
+      // wake it up!
+      resetServoDriver();
+      beep(1200,200);  // chirp to warn user of brown out on servo controller
+      Serial.print("#SR");  // output servo reset comment to Scratch console
+    }
+    freqWatchDog = millis() + 100;
+  }
+}
 
 void loop() {
 
+  checkForServoSleep();
+  
+  ////////////////////
   int p = analogRead(A0);
-
   int factor = 1;
-
-#ifdef SERVOCALIBRATEMODE
-  int angle = map(p,0,1023,0,180);
-  setKnee(4, angle);
-
-  Serial.println(angle);
-
-  return;
-#endif
-
   
   //Serial.print("Analog0="); Serial.println(p);
-  if (p < 50) {
+  
+  if (p < 50) { // STAND STILL MODE
     static long ReportTime = 0;
+    
+    digitalWrite(13, LOW);  // turn off LED13 in stand mode
+    //resetServoDriver();
+    delay(250);
     stand();
     // in Stand mode we will also dump out all sensor values once per second to aid in debugging hardware issues
     if (millis() > ReportTime) {
@@ -1699,10 +1773,15 @@ void loop() {
           Serial.println("");
     }
 
-  } else if (p < 150) {
+  } else if (p < 150) {  // Servo adjust mode, put all servos at 90 degrees
+    
+    digitalWrite(13, flash(100));  // Flash LED13 rapidly in adjust mode
     stand_90_degrees();
     Serial.println("AdjustMode");
-  } else if (p < 300) {           // test each motor one by one mode
+    
+  } else if (p < 300) {   // Test each servo one by one
+    pinMode(13, flash(500));      // flash LED13 moderately fast in servo test mode
+    
     for (int i = 0; i < 12; i++) {
       p = analogRead(A0);
       if (p > 300 || p < 150) {
@@ -1719,14 +1798,19 @@ void loop() {
       delay(100);
       Serial.print("SERVO: "); Serial.println(i);
     }
+    
   } else if (p < 600) {  // demo mode
-  
+
+    digitalWrite(13, flash(2000));  // flash LED13 very slowly in demo mode
+
+
     random_gait(timingfactor);
-    Serial.println("Rand");
+    //Serial.println("Rand");
     return;
 
   } else { // bluetooth mode
 
+    digitalWrite(13, HIGH);   // LED13 is set to steady on in bluetooth mode
     int gotnewdata = receiveDataHandler();  // handle any new incoming data first
     //Serial.print(gotnewdata); Serial.print(" ");
 
