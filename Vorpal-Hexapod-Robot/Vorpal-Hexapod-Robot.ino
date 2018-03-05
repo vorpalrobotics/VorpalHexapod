@@ -1313,10 +1313,8 @@ void setup() {
 
   delay(250);
 
-  if (digitalRead(6) == LOW) { // Analog servo mode
-    FreqMult = 1;  // 2 is safe for just about any digital servo and makes them
-                   // work a bit better. 3 is usually fine too but
-                   // let's not push it.
+  if (digitalRead(ServoTypePin) == LOW) { // Analog servo mode
+    FreqMult = 1;  // Analog servos should be run at a slower speed (60 hertz).
   }
                    
   // Chirp a number of times equal to FreqMult so we confirm what servo mode is in use
@@ -1332,9 +1330,9 @@ void setup() {
   
   delay(300);
   
-  beep(400);
-
   //CmuCam5.init();   // we're still working out some issues with CmuCam5
+  
+  beep(400); // Signals end of startup sequence
 
   yield();
 }

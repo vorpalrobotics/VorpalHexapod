@@ -274,9 +274,6 @@ long RecNextEventTime = 0; // next time to record or play an event if using reco
 
 int count = 0;  // used to limit debug output
 
-
-
-
 long NextTransmitTime = 0;  // next time to send a command to the robot
 char PlayLoopMode = 0;
 int BTFrameSize = REC_FRAMESIZE;
@@ -291,11 +288,34 @@ void setBeep(int f, int d) {
   BeepFreq = f;
   BeepDur = d;
 }
+void SDListFiles() {
+#if 0
+  File root = SD.open("/");
+  if (!root) {
+    Serial.println("#SDERR:NoRoot");
+  }
+  while (true) {
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    Serial.print("#F="); Serial.print(entry.name());
+    if (entry.isDirectory()) {
+      Serial.println(":ISDIR");
+    } else {
+      Serial.print(":"); Serial.println(entry.size(), DEC);
+    }
+    entry.close();
+  }
+  root.close();
+#endif
+}
 
 void eraseRecording() {
       //debug("ERASING"); debugln();
       // to erase the recording, close the file, remove the file, then re-open it again
-      Serial.println("#SDERASE");
+      Serial.print("#SDERASE:"); Serial.println(SDGamepadRecordFileName);
       if (SDGamepadRecordFile) {
         SDGamepadRecordFile.close();
       }
@@ -580,7 +600,8 @@ int handleSerialInput() {
           ScratchState = SCR_WAITING_FOR_HEX_1;
         } else if (c == 'R') {
           ScratchState = SCR_WAITING_FOR_REC_1;
-          //Serial.println("#SCREC!");
+          Serial.println("#SCREC");
+          SDListFiles();
         } else {
           Serial.print("#SCRERR:HDR:"); Serial.print(c); Serial.print("("); Serial.write(c); Serial.println(")");
         }
@@ -640,6 +661,7 @@ int handleSerialInput() {
             StopScratchRecording();
             ScratchState = SCR_WAITING_FOR_HEADER;
             Serial.println("#SCRECSTP");
+            SDListFiles();
           } else { // start recording
             // stop any prior recording that might be happening
             StopScratchRecording();
@@ -754,8 +776,11 @@ void loop() {
       if (millis() - curmatrixstarttime < 50) {
         setBeep(BF_ERASE, BD_SHORT);
       } else if (millis() - curmatrixstarttime > 2000) { // long tap required to erase for safety
+        Serial.println("#ERASEALL");
+        SDListFiles();
         eraseRecording();
         setBeep(BF_ERASE, BD_LONG);
+        SDListFiles();
       }
       break;
 
