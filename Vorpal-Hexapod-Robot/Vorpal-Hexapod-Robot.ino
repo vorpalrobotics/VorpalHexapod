@@ -1725,7 +1725,6 @@ long freqWatchDog = 0;
 void checkForServoSleep() {
 
   if (millis() > freqWatchDog) {
-    //if (servoDriver.read8(0) & 16) { // servo driver board is in sleep mode, probably because of a brown out condition
 
     // See if the servo driver module went to sleep, probably due to a short power dip
     Wire.beginTransmission(SERVO_IIC_ADDR);
@@ -1797,11 +1796,9 @@ void loop() {
       Serial.print("SERVO: "); Serial.println(i);
     }
     
-  } else if (p < 600) {  // demo mode
+  } else if (p < 750) {  // demo mode
 
     digitalWrite(13, flash(2000));  // flash LED13 very slowly in demo mode
-
-
     random_gait(timingfactor);
     //Serial.println("Rand");
     return;
