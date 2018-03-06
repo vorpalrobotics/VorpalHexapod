@@ -1,4 +1,5 @@
 // Copyright (C) 2017 Vorpal Robotics, LLC.
+
 //
 // This work is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
 // To view a copy of this license, visit http://creativecommons.org/licenses/by-nc-sa/4.0/.
@@ -8,7 +9,7 @@
 // For information on licensing this work for commercial purposes, please send email to support@vorpalrobotics.com
 //
 
-char *Version = "#V1r8e";   // in this version, fixes to make debugging RECORD feature easier
+char *Version = "#V1r8d";
 
 int debugmode = 0;   // make this 1 for debug mode. NOTE: debug mode may make Scratch unstable, don't leave it on!
 
@@ -57,7 +58,8 @@ int debugmode = 0;   // make this 1 for debug mode. NOTE: debug mode may make Sc
 // tons of recording time. We internally limit it to about 1 hour
 // just so people don't forget they have record on and fill up their card.
 //
-// At the end of the playback another short beep will sound, indicating the playback has ended.
+// While playing back the internal beeper will make a low pitched beep
+// every couple of seconds.
 //
 // Erase has to be held for several full seconds. A long deep tone indicates the erase
 // occurred.
@@ -159,7 +161,7 @@ int priorMatrix = -1;
 long curMatrixStartTime = 0;
 int longClick = 0;  // this will be set to 1 if the last matrix button pressed was held a long time
 
-#define LONGCLICKMILLIS 500  // half a second engages "long click" mode
+#define LONGCLICKMILLIS 500
 
 int scanmatrix() {
   // we will energize row lines then read column lines
@@ -194,9 +196,6 @@ int scanmatrix() {
           longClick = 0;
         } else if (millis() - curMatrixStartTime > LONGCLICKMILLIS) {
           // User has been holding down the same button continuously for a long time
-          if (longClick != 1) {
-                  setBeep(400,50);  // second tone giving user feedback that long click has engaged
-          }
           longClick = 1;
         }
         return curmatrix;
@@ -265,14 +264,17 @@ char decode_button(int b) {
 #define REC_REWINDING 4
 #define REC_ERASING 5
 
-#define REC_MAXLEN (400000)  // we will arbitrarily limit recording time to about 1 hour
+#define REC_MAXLEN (40000)  // we will arbitrarily limit recording time to about 1 hour
 #define REC_FRAMEMILLIS 100   // time between data frames when recording/playing
-#define REC_FRAMESIZE 13       // number of bytes in a recording frame
+#define REC_FRAMESIZE 13       // number of bytes in a frame
 
 int RecState = REC_STOPPED;
 long RecNextEventTime = 0; // next time to record or play an event if using record/play mode
 
 int count = 0;  // used to limit debug output
+
+
+
 
 long NextTransmitTime = 0;  // next time to send a command to the robot
 char PlayLoopMode = 0;
@@ -288,37 +290,12 @@ void setBeep(int f, int d) {
   BeepFreq = f;
   BeepDur = d;
 }
-void SDListFiles() {
-#if 0
-  File root = SD.open("/");
-  if (!root) {
-    Serial.println("#SDERR:NoRoot");
-  }
-  while (true) {
-    File entry =  dir.openNextFile();
-    if (! entry) {
-      // no more files
-      break;
-    }
-    Serial.print("#F="); Serial.print(entry.name());
-    if (entry.isDirectory()) {
-      Serial.println(":ISDIR");
-    } else {
-      Serial.print(":"); Serial.println(entry.size(), DEC);
-    }
-    entry.close();
-  }
-  root.close();
-#endif
-}
 
 void eraseRecording() {
       //debug("ERASING"); debugln();
       // to erase the recording, close the file, remove the file, then re-open it again
-      Serial.print("#SDERASE:"); Serial.println(SDGamepadRecordFileName);
-      if (SDGamepadRecordFile) {
-        SDGamepadRecordFile.close();
-      }
+      //Serial.println("#SDERASE");
+      SDGamepadRecordFile.close();
       SD.remove(SDGamepadRecordFileName) || Serial.println("#SDRMF");  // SD Erase Failed
       SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
       if (SDGamepadRecordFile) {
@@ -351,9 +328,6 @@ void RecordPlayHandler() {
     }
   }
 
-  // if we get here, we know we have an SD card file successfully opened
-  // so there is no need to keep checking it for non-null
-
   switch (RecState) {
     case REC_STOPPED:
       //Serial.println("REC STOPPED");
@@ -363,8 +337,6 @@ void RecordPlayHandler() {
       SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
       if (SDGamepadRecordFile) {
         SDGamepadRecordFile.seek(0);
-      } else {
-        Serial.println("#SDOPERR");
       }
       break;
       
@@ -396,7 +368,7 @@ void RecordPlayHandler() {
               SDGamepadRecordFile.seek(0);
               length = SDGamepadRecordFile.read();
             }
-            Serial.println("#SDLOOP");
+            //Serial.println("#SDLOOP");
           } else {
             RecState = REC_STOPPED;
             return;
@@ -476,10 +448,6 @@ void RecordPlayHandler() {
 }
 
 void setup() {
-
-  Serial.begin(9600);
-  Serial.println(Version);  // this will be printed on Scratch Console so you know the gamepad is talking to Scratch
-  
   // make a characteristic flashing pattern to indicate the gamepad code is loaded.
   pinMode(13, OUTPUT);
   digitalWrite(13, HIGH);
@@ -492,7 +460,10 @@ void setup() {
   // after this point you can't flash the led on pin 13 because we're using it for SD card
 
   BlueTooth.begin(38400);
-
+  Serial.begin(9600);
+  if (debugmode) {
+    Serial.println(Version);
+  }
   pinMode(A0, OUTPUT);  // extra ground for additional FTDI port
   digitalWrite(A0, LOW);
   pinMode(VCCA1, OUTPUT);
@@ -507,29 +478,6 @@ void setup() {
     return;
   }
 
-  // if the R4 button (recording erase) is being held down during boot, then
-  // erase all recordings on the SD card
-  if (scanmatrix() == 15) {
-    char fname[8];
-    strcpy(fname, SDGamepadRecordFileName);
-    SD.remove(SDGamepadRecordFileName);  // remove any manual recording from gamepad
-
-    // this loop removes Scratch recordings on buttons
-    for (int m = 0; m < 3; m++) { 
-      for (int n = 0; n < 4; n++) {
-         for (int d = 0; d < 6; d++) {
-          // creates every possible combination of filenames for button files
-          fname[0] = "WDF"[m];
-          fname[1] = "1234"[n];
-          fname[2] = "fblrws"[d];
-          SD.remove(fname);
-          Serial.print("#SDRM="); Serial.println(fname);
-         }
-      }
-    }
-    // long beep to robot to confirm, of course BT may not be connected yet but we'll try
-    setBeep(600,600);
-  }
   // open the record file for writing, it will be retained even across gamepad boots.
   SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE); // we will keep this file open at all times
 
@@ -600,8 +548,6 @@ int handleSerialInput() {
           ScratchState = SCR_WAITING_FOR_HEX_1;
         } else if (c == 'R') {
           ScratchState = SCR_WAITING_FOR_REC_1;
-          Serial.println("#SCREC");
-          SDListFiles();
         } else {
           Serial.print("#SCRERR:HDR:"); Serial.print(c); Serial.print("("); Serial.write(c); Serial.println(")");
         }
@@ -660,9 +606,14 @@ int handleSerialInput() {
           if (c == 'S') { // stop recording if final letter of record transmission is a capital S
             StopScratchRecording();
             ScratchState = SCR_WAITING_FOR_HEADER;
-            Serial.println("#SCRECSTP");
-            SDListFiles();
+            //Serial.println("#SCRECSTP");
           } else { // start recording
+            // if we're already recording to the same file, don't do anything
+            if (SDGamepadRecordFileName[0] == ScratchSDFileName[0] &&
+                SDGamepadRecordFileName[1] == ScratchSDFileName[1] &&
+                SDGamepadRecordFileName[2] == ScratchSDFileName[2]) {
+                  return dataread;
+            }
             // stop any prior recording that might be happening
             StopScratchRecording();
             
@@ -672,7 +623,7 @@ int handleSerialInput() {
             SD.remove(SDGamepadRecordFileName); // erase any prior version
             SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
             ScratchState = SCR_WAITING_FOR_HEADER;
-            Serial.print("#SCRECF="); Serial.println(SDGamepadRecordFileName);
+            //Serial.print("#SCRECFILE="); Serial.println(SDGamepadRecordFileName);
             RecState = REC_STOPPED;  // if recording was previously happening from the gamepad this stops it
           }
        } // end of "if scratchxmitbytes == 3"
@@ -698,6 +649,9 @@ void loop() {
 
   int serialinput = handleSerialInput();  // this would be commands coming from scratch over the hardware serial port
 
+  if (serialinput && debugmode) {
+    Serial.print("#SERINP="); Serial.println(serialinput);
+  }
   // if the robot sends something back to us, print it to the serial port
   // this is likely to be sensor data for scratch or debugging info
   
@@ -709,6 +663,9 @@ void loop() {
   // the button pad for a moment, and also disable debug printing to the serial port
   if (serialinput > 0) {
     suppressButtonsUntil = millis() + 1000;
+    if (debugmode) {
+      Serial.println("#SUP");
+    }
   }
 
   if (millis() < suppressButtonsUntil) {
@@ -776,11 +733,8 @@ void loop() {
       if (millis() - curmatrixstarttime < 50) {
         setBeep(BF_ERASE, BD_SHORT);
       } else if (millis() - curmatrixstarttime > 2000) { // long tap required to erase for safety
-        Serial.println("#ERASEALL");
-        SDListFiles();
         eraseRecording();
         setBeep(BF_ERASE, BD_LONG);
-        SDListFiles();
       }
       break;
 
