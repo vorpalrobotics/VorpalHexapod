@@ -1,6 +1,6 @@
-
+// This version defaults to Analog Servo Mode
 ////////////////////////////////////////////////////////////////////////////////
-//           Vorpal Combat Hexapod Control Program  V1R8h
+//           Vorpal Combat Hexapod Control Program  V1R8j
 //
 // Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
 //
@@ -77,7 +77,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <Pixy.h>
 
 
-int FreqMult = 2;   // PWM frequency multiplier, use 1 for analog servos and up to about 3 for digital.
+int FreqMult = 1;   // PWM frequency multiplier, use 1 for analog servos and up to about 3 for digital.
                     // The recommended setting for digital is 2 (probably safe for all digital servos)
                     // A shunt between Nano D5 and D6 will set this to "1" in setup, this allows you
                     // to select digital servo mode (2) or analog servo mode (1) using a shunt 
@@ -464,14 +464,14 @@ void wave(int dpad) {
   }
 }
 
-#if 0
+#if 1
 
 void gait_sidestep(int left, long timeperiod) {
 
   // the gait consists of 6 phases and uses tripod definitions
 
 #define NUM_SIDESTEP_PHASES 6
-#define FBSHIFT    50   // shift front legs back, back legs forward, this much
+#define FBSHIFTSS    50   // shift front legs back, back legs forward, this much
   
   long t = millis()%timeperiod;
   long phase = (NUM_SIDESTEP_PHASES*t)/timeperiod;
@@ -489,39 +489,39 @@ void gait_sidestep(int left, long timeperiod) {
   switch (phase) {
     case 0:
       // Lift up tripod group 1 while group 2 goes to neutral setting
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_UP, FBSHIFT);
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFT);
+      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_UP, FBSHIFTSS);
+      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
       break;
 
     case 1:
       // slide over by curling one side under the body while extending the other side
-      setLeg(TRIPOD2_LEGS&side1, HIP_NEUTRAL, KNEE_DOWN, FBSHIFT);
-      setLeg(TRIPOD2_LEGS&side2, HIP_NEUTRAL, KNEE_RELAX, FBSHIFT);
+      setLeg(TRIPOD2_LEGS&side1, HIP_NEUTRAL, KNEE_DOWN, FBSHIFTSS);
+      setLeg(TRIPOD2_LEGS&side2, HIP_NEUTRAL, KNEE_RELAX, FBSHIFTSS);
       break;
 
     case 2: 
       // now put the first set of legs back down on the ground
       // and at the sametime put the curled legs into neutral position
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFT);
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFT);
+      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
+      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
       break;
 
     case 3:
       // Lift up tripod group 2 while group 2 goes to neutral setting
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_UP, FBSHIFT);
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFT);  
+      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_UP, FBSHIFTSS);
+      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);  
       break;
       
     case 4:
       // slide over by curling one side under the body while extending the other side
-      setLeg(TRIPOD1_LEGS&side1, HIP_NEUTRAL, KNEE_DOWN, FBSHIFT);
-      setLeg(TRIPOD1_LEGS&side2, HIP_NEUTRAL, KNEE_RELAX, FBSHIFT);
+      setLeg(TRIPOD1_LEGS&side1, HIP_NEUTRAL, KNEE_DOWN, FBSHIFTSS);
+      setLeg(TRIPOD1_LEGS&side2, HIP_NEUTRAL, KNEE_RELAX, FBSHIFTSS);
       break;
 
     case 5:
       // now put all the legs back down on the ground, then the cycle repeats
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFT);
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFT);
+      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
+      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
       break;
   }
 }
@@ -1314,7 +1314,9 @@ void setup() {
   delay(250);
 
   if (digitalRead(ServoTypePin) == LOW) { // Analog servo mode
-    FreqMult = 1;  // Analog servos should be run at a slower speed (60 hertz).
+    FreqMult = 3-FreqMult;  // If FreqMult was 1, this makes it 2. If it was 2, this makes it 1.
+                            // In this way the global default of 1 or 2 will reverse if the shunt
+                            // is on ServoTypePin
   }
                    
   // Chirp a number of times equal to FreqMult so we confirm what servo mode is in use
@@ -1617,18 +1619,18 @@ void processPacketData() {
         // the 16 bytes of movement data is either a number from 1 to 180 meaning a position, or the
         // number 255 meaning "no move, stay at prior value", or 254 meaning "cut power to servo"
         if (i <= packetLengthReceived - 18) {
-            //Serial.println("Got Raw Servo with enough bytes left");
+            Serial.println("Got Raw Servo with enough bytes left");
             int movetype = packetData[i+1];
-            //Serial.print(" Movetype="); Serial.println(movetype);
+            Serial.print(" Movetype="); Serial.println(movetype);
             for (int servo = 0; servo < 16; servo++) {
               int pos = packetData[i+2+servo];
               if (pos == RAWSERVONOMOVE) {
-                //Serial.print("Port "); Serial.print(servo); Serial.println(" NOMOVE");
+                Serial.print("Port "); Serial.print(servo); Serial.println(" NOMOVE");
                 continue;
               }
               if (pos == RAWSERVODETACH) {
                     servoDriver.setPin(servo,0,false); // stop pulses which will quickly detach the servo
-                    //Serial.print("Port "); Serial.print(servo); Serial.println(" detached");
+                    Serial.print("Port "); Serial.print(servo); Serial.println(" detached");
                     continue;
               }
               if (movetype == RAWSERVOADD) {
@@ -1636,10 +1638,13 @@ void processPacketData() {
               } else if (movetype == RAWSERVOSUB) {
                 pos = ServoPos[servo] - pos;
               }
-              //Serial.print("Servo "); Serial.print(servo); Serial.print(" pos "); Serial.println(pos);
+              pos = constrain(pos,0,180);
+              Serial.print("Servo "); Serial.print(servo); Serial.print(" pos "); Serial.println(pos);
               setServo(servo, pos);
             }
             i += 18; // length of raw servo move is 18 bytes
+            mode = MODE_LEG;  // suppress auto-repeat of gamepad commands when this is in progress\
+            startedStanding = -1; // don't allow sleep mode while this is running
         } else {
           // again, we're short on bytes for this command so something is amiss
           beep(BF_ERROR, BD_MED);
@@ -1647,7 +1652,58 @@ void processPacketData() {
           return;  // toss the rest of the packet
         }
         break;
-      case 'L': // leg motion command (coming from Scratch most likely)
+
+#if 1
+     case 'G': // Gait command (coming from Scratch most likely). This command is always 9 bytes long
+               // params: literal 'G', 
+               //         Gait type: 0=tripod, 1=turn in place CW from top, 2=ripple, 3=sidestep
+               //         reverse direction(0 or 1), hipforward (angle), hipbackward (angle), 
+               //         kneeup (angle), kneedown(angle), time (2 byte unsigned long)
+              if (i <= packetLengthReceived - 9) {
+                 unsigned int gaittype = packetData[i+1];
+                 unsigned int reverse = packetData[i+2];
+                 unsigned int hipforward = packetData[i+3];
+                 unsigned int hipbackward = packetData[i+4];
+                 unsigned int kneeup = packetData[i+5];
+                 unsigned int kneedown = packetData[i+6];
+                 unsigned long timeperiod = word(packetData[i+7], packetData[i+8]);
+      
+                 switch (gaittype) {
+                  case 0:
+                  default:
+                             gait_tripod(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod);
+                             break;
+                  case 1:
+                             turn(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod);
+                             break;
+                  case 2:
+                             gait_ripple(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod);
+                             break;
+                  case 3:
+                             gait_sidestep(reverse, timeperiod);
+                             break;
+                 }
+      
+                 
+                 //Serial.print("GAIT: style="); Serial.print(gaittype); Serial.print(" dir="); Serial.print(reverse,DEC); Serial.print(" angles=");Serial.print(hipforward);
+                 //Serial.print("/"); Serial.print(hipbackward); Serial.print("/"); Serial.println(kneeup,DEC);
+      
+                 // mode = MODE_LEG;   // this stops auto-repeat of gamepad mode commands
+                 i += 9;  // length of command
+                 startedStanding = -1; // don't sleep the legs during this command
+                 if (ServosDetached) { // wake up any sleeping servos
+                  attach_all_servos();
+                 }
+                 mode = MODE_LEG; // do not autorepeat prior gamepad commands during this command
+              } else {
+                  // again, we're short on bytes for this command so something is amiss
+                  beep(BF_ERROR, BD_MED);
+                  Serial.println("PKERR:G:Short");
+                  return;  // toss the rest of the packet                
+              }
+              break;
+#endif
+      case 'L': // leg motion command (coming from Scratch most likely). This command is always 5 bytes long
         if (i <= packetLengthReceived - 5) {
            unsigned int knee = packetData[i+2];
            unsigned int hip = packetData[i+3];
@@ -1670,12 +1726,47 @@ void processPacketData() {
            if (ServosDetached) { // wake up any sleeping servos
             attach_all_servos();
            }
+           break;
         } else {
           // again, we're short on bytes for this command so something is amiss
           beep(BF_ERROR, BD_MED);
           Serial.println("PKERR:L:Short");
           return;  // toss the rest of the packet
         }
+
+#if 1
+        case 'P': // Pose command (from Scratch) sets all 12 robot leg servos in a single command
+                  // special value of 255 means no change from prior commands, 254 means power down the servo
+                  // This command is 13 bytes long: "P" then 12 values to set servo positions, in order from servo 0 to 11
+            if (i <= packetLengthReceived - 13) {
+              for (int servo = 0; servo < 12; servo++) {
+                 unsigned int position = packetData[i+1+servo];
+                 if (position < 0) {
+                  position = 0;
+                 } else if (position > 180 && position < 254) {
+                  position = 180;
+                 }
+                 //Serial.print("POSE:"); Serial.print(servo); Serial.print(":"); Serial.println(position);
+                 if (position < 254) {
+                  setServo(servo, position);
+                 }
+              }
+              mode = MODE_LEG;   // this stops auto-repeat of gamepad mode commands
+             
+              i += 13;  // length of pose command
+              startedStanding = -1; // don't sleep the legs when a specific LEG command was received
+              if (ServosDetached) { // wake up any sleeping servos
+               attach_all_servos();
+              }
+              break;
+            } else {
+              // again, we're short on bytes for this command so something is amiss
+              beep(BF_ERROR, BD_MED);
+              Serial.println("PKERR:P:Short");
+              return;  // toss the rest of the packet
+            }
+#endif
+
       case 'S':   // sensor request
         // CMUCam seems to require it's own power supply so for now we're not doing that, will get it
         // figured out by the time KS shipping starts.
@@ -1742,6 +1833,8 @@ void checkForServoSleep() {
   }
 }
 
+long ReportTime = 0;
+
 void loop() {
 
   checkForServoSleep();
@@ -1753,7 +1846,6 @@ void loop() {
   //Serial.print("Analog0="); Serial.println(p);
   
   if (p < 50) { // STAND STILL MODE
-    static long ReportTime = 0;
     
     digitalWrite(13, LOW);  // turn off LED13 in stand mode
     //resetServoDriver();
@@ -1762,7 +1854,7 @@ void loop() {
     // in Stand mode we will also dump out all sensor values once per second to aid in debugging hardware issues
     if (millis() > ReportTime) {
           ReportTime = millis() + 1000;
-          Serial.println("Stand, Sensors:");
+          Serial.println("Stand Mode, Sensors:");
           Serial.print(" A3="); Serial.print(analogRead(A3));
           Serial.print(" A6="); Serial.print(analogRead(A6));
           Serial.print(" A7="); Serial.print(analogRead(A7));
@@ -1774,7 +1866,11 @@ void loop() {
     
     digitalWrite(13, flash(100));  // Flash LED13 rapidly in adjust mode
     stand_90_degrees();
-    Serial.println("AdjustMode");
+
+    if (millis() > ReportTime) {
+          ReportTime = millis() + 1000;
+          Serial.println("AdjustMode");
+    }
     
   } else if (p < 300) {   // Test each servo one by one
     pinMode(13, flash(500));      // flash LED13 moderately fast in servo test mode
@@ -1800,12 +1896,19 @@ void loop() {
 
     digitalWrite(13, flash(2000));  // flash LED13 very slowly in demo mode
     random_gait(timingfactor);
-    //Serial.println("Rand");
+    if (millis() > ReportTime) {
+          ReportTime = millis() + 1000;
+          Serial.println("Demo Mode");
+    }
     return;
 
   } else { // bluetooth mode
 
     digitalWrite(13, HIGH);   // LED13 is set to steady on in bluetooth mode
+    if (millis() > ReportTime) {
+          ReportTime = millis() + 1000;
+          Serial.println("RC Mode");
+    }
     int gotnewdata = receiveDataHandler();  // handle any new incoming data first
     //Serial.print(gotnewdata); Serial.print(" ");
 
