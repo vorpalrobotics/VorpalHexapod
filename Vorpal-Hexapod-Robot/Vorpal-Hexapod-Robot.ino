@@ -1,6 +1,6 @@
 // This version defaults to Analog Servo Mode
 ////////////////////////////////////////////////////////////////////////////////
-//           Vorpal Combat Hexapod Control Program  V1R8j
+//           Vorpal Combat Hexapod Control Program  Version: V1R8j
 //
 // Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
 //
@@ -1812,6 +1812,7 @@ int flash(int t) {
 // drawing more power than usual. A bad BEC can also cause the issue.
 //
 long freqWatchDog = 0;
+long SuppressScamperUntil = 0;  // if we had to wake up the servos, suppress the power hunger scamper mode for a while
 
 void checkForServoSleep() {
 
@@ -1826,8 +1827,8 @@ void checkForServoSleep() {
     if (mode1 & 16) { // the fifth bit up from the bottom is 1 if controller was asleep
       // wake it up!
       resetServoDriver();
-      beep(1200,200);  // chirp to warn user of brown out on servo controller
-      Serial.print("#SR");  // output servo reset comment to Scratch console
+      beep(1200,100);  // chirp to warn user of brown out on servo controller
+      SuppressScamperUntil = millis() + 10000;  // no scamper for 10 seconds if we ran out of power
     }
     freqWatchDog = millis() + 100;
   }
@@ -2023,7 +2024,7 @@ void loop() {
         startedStanding = -1;
         switch (mode) {
           case MODE_WALK:
-              if (submode == SUBMODE_4) {
+              if (submode == SUBMODE_4 && SuppressScamperUntil < millis()) {
                 gait_tripod_scamper(0,0);
               } else {
                 if (submode == SUBMODE_2) { // high step
@@ -2056,7 +2057,7 @@ void loop() {
         startedStanding = -1;
         switch (mode) {
           case MODE_WALK:
-          if (submode == SUBMODE_4) {
+          if (submode == SUBMODE_4 && SuppressScamperUntil < millis()) {
               gait_tripod_scamper(1,0);
           } else {
             if (submode == SUBMODE_2) {
@@ -2091,7 +2092,7 @@ void loop() {
             if (submode == SUBMODE_2) {
               factor = 2;
             }
-            if (submode == SUBMODE_4) {
+            if (submode == SUBMODE_4 && SuppressScamperUntil < millis()) {
               gait_tripod_scamper(1,1);
             } else {
               turn(0, (submode==SUBMODE_3)?HIP_BACKWARD_SMALL:HIP_BACKWARD, 
@@ -2123,7 +2124,7 @@ void loop() {
             if (submode == SUBMODE_2) {
               factor = 2;
             }
-            if (submode == SUBMODE_4) {
+            if (submode == SUBMODE_4 && SuppressScamperUntil < millis()) {
               gait_tripod_scamper(0,1);
             } else {
               turn(1, (submode==SUBMODE_3)?HIP_BACKWARD_SMALL:HIP_BACKWARD, 
