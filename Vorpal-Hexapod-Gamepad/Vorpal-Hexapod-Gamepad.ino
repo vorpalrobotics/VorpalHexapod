@@ -26,18 +26,18 @@
 // a Nano with an FT232 usb serial IO chip rather than the cheaper CH34x chip, because the FT232 will work much more seamlessly
 // with Mac computers for use with the Scratch Features. If you don't care about using Scratch on Mac then it doesn't matter.
 
-// This version fixes some issues with Scratch Record/Play and adds "trim mode" support for fine adjustment of servos.
+// This version fixes some issues with Scratch Record/Play
 
-const char *Version = "#V1r8j";
+const char *Version = "#V1r8k";
 
-int debugmode = 0;          // Set to 1 to get more debug messages. Warning: this may make Scratch unstable so don't leave it on.
+int debugmode = 1;          // Set to 1 to get more debug messages. Warning: this may make Scratch unstable so don't leave it on.
 
 #define DEBUG_SD  1          // Set this to 1 if you want debugging info about the SD card and record/play functions.
                             // This is very verbose and may affect scratch performance so only do it if you have to.
                             // It also takes up a lot of memory and you might get warnings from Arduino about too little
                             // RAM being left. But it seems to work for me even with that warning.
 
-#define DEBUG_BUTTONS 0     // There is some manufacturer who is selling defective DPAD modules that look just like the
+#define DEBUG_BUTTONS 1     // There is some manufacturer who is selling defective DPAD modules that look just like the
                             // ones sold by Vorpal Robotics, and they have a different set of output values for each
                             // button (and only use a small percentage of the range of values, which is why I consider
                             // them to be defective). If you get one of those, set this define to 1 and you'll get debug info sent
@@ -456,9 +456,11 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
           } else {
             if (GRecState == REC_PLAYING) {
               GRecState = REC_STOPPED;
+              SDGamepadRecordFile.close();
             }
             if (SRecState == SREC_PLAYING) {
               SRecState = SREC_STOPPED;
+              SDScratchRecordFile.close();
             }
             file.close();
             return;
@@ -624,7 +626,7 @@ void RecordPlayHandler() {
 
     //////////////////////////////////////////////////////////
     default:
-      Serial.println("#E2:");      // "Record State Error"
+      Serial.print("#E2:");      // "Record State Error"
       Serial.print(GRecState); println();
       break;
   }
@@ -837,7 +839,7 @@ int handleSerialInput() {
 void loop() {
   int matrix = scanmatrix();
   if (debugmode && matrix != -1) {
-    Serial.print("#MA:");Serial.println(matrix);
+    Serial.print("#MA:LC=");Serial.print(longClick); Serial.print("m:"); Serial.println(matrix);
   }
 
   if (priormatrix != matrix) {  // the matrix button pressed has changed from the prior loop iteration
@@ -852,7 +854,7 @@ void loop() {
     if (matrix < REC_RECORD) {  // don't beep if it's a record button
       setBeep(2000,100); // high pitch beep tells user they are in long click mode
 #if DEBUG_BUTTONS
-      Serial.println("#LONGCLICK");
+      Serial.println("#LCL"); // long click
 #endif
     }
     priorLongClick = longClick;  // keep track of whether we are already long clicking
@@ -862,7 +864,7 @@ void loop() {
                                           // the return code is how many bytes of serial input were handled
 #if DEBUG_SD
   if (serialinput && debugmode) {
-    Serial.print("#SERINP="); Serial.println(serialinput);
+    Serial.print("#SINP="); Serial.println(serialinput);
   }
 #endif
 
@@ -968,6 +970,7 @@ void loop() {
       } else if (millis() - curmatrixstarttime > 2000) { // very long tap required to erase for safety
         SDGamepadRecordFile.close();
         SD.remove(SDGamepadRecordFileName);
+        GRecState = REC_STOPPED;
 #if DEBUG_SD
         Serial.println("#ERS");
 #endif       
@@ -991,6 +994,13 @@ void loop() {
   // The following code handles the Scratch recording to a mode button feature
   //
 
+  if (!longClick) { // if we're not in longclick mode, take us out of scratch play mode
+    if (SRecState == SREC_PLAYING) {
+      SRecState = SREC_STOPPED;
+      SDScratchRecordFile.close();
+    }
+  }
+
   if (longClick && (CurCmd == 'W' || CurCmd == 'D' || CurCmd == 'F')) {
     // see if a special command is already in progress
     if (SRecState == SREC_PLAYING && 
@@ -1009,7 +1019,7 @@ void loop() {
           SDScratchRecordFile.close();
           SRecState = SREC_STOPPED;
 #if DEBUG_SD
-          Serial.print("#PL:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.println(CurDpad);Serial.println(SDGamepadRecordFileName);
+          Serial.print("#PL:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.print(CurDpad);Serial.println(SDScratchRecordFileName);
 #endif
           // see if there exists a file for the current button sequence
           char cmdfile[4];
@@ -1020,7 +1030,7 @@ void loop() {
 
             SRecState = SREC_PLAYING;
 #if DEBUG_SD
-            Serial.print("#@");Serial.println(SDGamepadRecordFileName);
+            Serial.print("#@");Serial.println(SDScratchRecordFileName);
 #endif
           } else {
 #if DEBUG_SD
@@ -1028,6 +1038,7 @@ void loop() {
 #endif
             // There is no recording for the current button sequence so we should drop out of play mode
             SRecState = SREC_STOPPED;
+            SDScratchRecordFile.close();  // just in case it's open. it's ok to close it if it's not open
           }
         }
   }  // END OF LONGCLICK HANDLER

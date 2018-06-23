@@ -199,11 +199,12 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 #define RIPPLE_CYCLE_TIME 1800
 #define FIGHT_CYCLE_TIME 660
 
-#define MODE_WALK 'W'
-#define MODE_DANCE 'D'
-#define MODE_FIGHT 'F'
+#define MODE_WALK   'W'
+#define MODE_DANCE  'D'
+#define MODE_FIGHT  'F'
 #define MODE_RECORD 'R'
-#define MODE_LEG   'L'
+#define MODE_LEG    'L'       // comes from scratch
+#define MODE_GAIT   'G'       // comes from scratch
 
 #define SUBMODE_1 '1'
 #define SUBMODE_2 '2'
@@ -239,10 +240,15 @@ void beep(int f) {  // if no second param is given we'll default to 250 millisec
 // if a position is -1 then that means don't change that item
 
 void setLeg(int legmask, int hip_pos, int knee_pos, int adj) {
-  setLeg(legmask, hip_pos, knee_pos, adj, 0);  // use the non-raw version
+  setLeg(legmask, hip_pos, knee_pos, adj, 0, 0);  // use the non-raw version with leanangle=0
 }
 
+// version with leanangle = 0
 void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw) {
+  setLeg(legmask, hip_pos, knee_pos, adj, raw, 0);
+}
+
+void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw, int leanangle) {
   for (int i = 0; i < NUM_LEGS; i++) {
     if (legmask & 0b1) {  // if the lowest bit is ON
       if (hip_pos != NOMOVE) {
@@ -253,7 +259,23 @@ void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw) {
         }
       }
       if (knee_pos != NOMOVE) {
-        setKnee(i, knee_pos);
+        int pos = knee_pos;
+        if (leanangle != 0) {
+          switch (i) {
+            case 0: case 6: case 5: case 11:
+              if (leanangle < 0) pos -= leanangle;
+              break;
+            case 1: case 7: case 4: case 10:
+              pos += abs(leanangle/2);
+              break;
+            case 2: case 8: case 3: case 9:
+              if (leanangle > 0) pos += leanangle;
+              break;
+          }
+          //Serial.print("Lean:"); Serial.print(leanangle); Serial.print("pos="); Serial.println(pos);
+        }
+        
+        setKnee(i, pos);
       }
     }
     legmask = (legmask>>1);  // shift down one bit position
@@ -304,10 +326,11 @@ void setKnee(int leg, int pos) {
   setServo(leg, pos);
 }
 
-
-
-
 void turn(int ccw, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod) {
+  turn(ccw, hipforward, hipbackward, kneeup, kneedown, timeperiod, 0);
+}
+
+void turn(int ccw, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod, int leanangle) {
   // use tripod groups to turn in place
   if (ccw) {
     int tmp = hipforward;
@@ -801,6 +824,14 @@ void fight_mode(char dpad, int mode, long timeperiod) {
 void gait_tripod(int reverse, int hipforward, int hipbackward, 
           int kneeup, int kneedown, long timeperiod) {
 
+    // this version makes leanangle zero
+    gait_tripod(reverse, hipforward, hipbackward, 
+          kneeup, kneedown, timeperiod, 0);      
+}
+
+void gait_tripod(int reverse, int hipforward, int hipbackward, 
+          int kneeup, int kneedown, long timeperiod, int leanangle) {
+
   // the gait consists of 6 phases. This code determines what phase
   // we are currently in by using the millis clock modulo the 
   // desired time period that all six  phases should consume.
@@ -813,7 +844,7 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
   }
 
 #define NUM_TRIPOD_PHASES 6
-#define FBSHIFT    15   // 40 shift front legs back, back legs forward, this much
+#define FBSHIFT    15   // shift front legs back, back legs forward, this much
   
   long t = millis()%timeperiod;
   long phase = (NUM_TRIPOD_PHASES*t)/timeperiod;
@@ -825,7 +856,7 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
     case 0:
       // in this phase, center-left and noncenter-right legs raise up at
       // the knee
-      setLeg(TRIPOD1_LEGS, NOMOVE, kneeup, 0);
+      setLeg(TRIPOD1_LEGS, NOMOVE, kneeup, 0, 0, leanangle);
       break;
 
     case 1:
@@ -837,12 +868,12 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
 
     case 2: 
       // now put the first set of legs back down on the ground
-      setLeg(TRIPOD1_LEGS, NOMOVE, kneedown, 0);
+      setLeg(TRIPOD1_LEGS, NOMOVE, kneedown, 0, 0, leanangle);
       break;
 
     case 3:
       // lift up the other set of legs at the knee
-      setLeg(TRIPOD2_LEGS, NOMOVE, kneeup, 0);
+      setLeg(TRIPOD2_LEGS, NOMOVE, kneeup, 0, 0, leanangle);
       break;
       
     case 4:
@@ -853,7 +884,7 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
 
     case 5:
       // put the second set of legs down, and the cycle repeats
-      setLeg(TRIPOD2_LEGS, NOMOVE, kneedown, 0);
+      setLeg(TRIPOD2_LEGS, NOMOVE, kneedown, 0, 0, leanangle);
       break;  
   }
 }
@@ -947,7 +978,12 @@ void gait_tripod_scamper(int reverse, int turn) {
   }
 }
 
+// call gait_ripple with leanangle = 0
 void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod) {
+  gait_ripple(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, 0);
+}
+
+void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod, int leanangle) {
   // the gait consists of 10 phases. This code determines what phase
   // we are currently in by using the millis clock modulo the 
   // desired time period that all phases should consume.
@@ -1253,15 +1289,17 @@ SoftwareSerial BlueTooth(3,2);  // Bluetooth pins: TX=3=Yellow wire,  RX=2=Green
 int ServosDetached = 0;
 
 void attach_all_servos() {
-  Serial.print("A");
+  Serial.print("ATTACH");
   for (int i = 0; i < 12; i++) {
     setServo(i, ServoPos[i]);
+    Serial.print(ServoPos[i]); Serial.print(":");
   }
+  Serial.println("");
   ServosDetached = 0;
   return;
 }
 void detach_all_servos() {
-  //Serial.print("D");
+  //Serial.println("DETACH");
   for (int i = 0; i < 16; i++) {
     servoDriver.setPin(i,0,false); // stop pulses which will quickly detach the servo
   }
@@ -1435,7 +1473,9 @@ int packetState = P_WAITING_FOR_HEADER;
 
 void packetErrorChirp(char c) {
   beep(70,8);
-  Serial.print("BTERR:"); Serial.print(packetState);Serial.print(c);Serial.print("A"); Serial.println(BlueTooth.available());
+  Serial.print(" BTER:"); Serial.print(packetState); Serial.print(c);
+  //Serial.print("("); Serial.print(c,DEC); Serial.print(")");
+  Serial.print("A"); Serial.println(BlueTooth.available());
   packetState = P_WAITING_FOR_HEADER; // reset to initial state if any error occurs
 }
 
@@ -1470,9 +1510,8 @@ int receiveDataHandler() {
             BlueTooth.read(); // toss up to next possible header start
             flushcount++;
           }
-          Serial.println(flushcount);
+          Serial.print("F:"); Serial.print(flushcount);
           packetErrorChirp(c);
-          return 0;
         }
         break;
       case P_WAITING_FOR_VERSION:
@@ -1553,6 +1592,46 @@ int receiveDataHandler() {
   }
 
   return 0; // no new data arrived
+}
+
+unsigned int LastGgaittype;
+unsigned int LastGreverse;
+unsigned int LastGhipforward;
+unsigned int LastGhipbackward;
+unsigned int LastGkneeup;
+unsigned int LastGkneedown;
+unsigned int LastGtimeperiod;
+int LastGleanangle;   // this can be negative so don't make it unsigned
+
+void gait_command(int gaittype, int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, int leanangle, int timeperiod) {
+
+       if (ServosDetached) { // wake up any sleeping servos
+        attach_all_servos();
+       }
+
+       switch (gaittype) {
+        case 0:
+        default:
+                   gait_tripod(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, leanangle);
+                   break;
+        case 1:
+                   turn(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, leanangle);
+                   break;
+        case 2:
+                   gait_ripple(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, leanangle);
+                   break;
+        case 3:
+                   gait_sidestep(reverse, timeperiod);
+                   break;
+       }
+
+#if 0
+       Serial.print("GAIT: style="); Serial.print(gaittype); Serial.print(" dir="); Serial.print(reverse,DEC); Serial.print(" angles=");Serial.print(hipforward);
+       Serial.print("/"); Serial.print(hipbackward); Serial.print("/"); Serial.print(kneeup,DEC); Serial.print("/"); Serial.print(kneedown); 
+       Serial.print("/"); Serial.println(leanangle);
+#endif
+
+       mode = MODE_GAIT;   // this stops auto-repeat of gamepad mode commands
 }
 
 void dumpPacket() { // this is purely for debugging, it can cause timing problems so only use it for debugging
@@ -1654,47 +1733,32 @@ void processPacketData() {
         break;
 
 #if 1
-     case 'G': // Gait command (coming from Scratch most likely). This command is always 9 bytes long
+     case 'G': // Gait command (coming from Scratch most likely). This command is always 10 bytes long
                // params: literal 'G', 
                //         Gait type: 0=tripod, 1=turn in place CW from top, 2=ripple, 3=sidestep
-               //         reverse direction(0 or 1), hipforward (angle), hipbackward (angle), 
-               //         kneeup (angle), kneedown(angle), time (2 byte unsigned long)
-              if (i <= packetLengthReceived - 9) {
-                 unsigned int gaittype = packetData[i+1];
-                 unsigned int reverse = packetData[i+2];
-                 unsigned int hipforward = packetData[i+3];
-                 unsigned int hipbackward = packetData[i+4];
-                 unsigned int kneeup = packetData[i+5];
-                 unsigned int kneedown = packetData[i+6];
-                 unsigned long timeperiod = word(packetData[i+7], packetData[i+8]);
-      
-                 switch (gaittype) {
-                  case 0:
-                  default:
-                             gait_tripod(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod);
-                             break;
-                  case 1:
-                             turn(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod);
-                             break;
-                  case 2:
-                             gait_ripple(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod);
-                             break;
-                  case 3:
-                             gait_sidestep(reverse, timeperiod);
-                             break;
-                 }
-      
-                 
-                 //Serial.print("GAIT: style="); Serial.print(gaittype); Serial.print(" dir="); Serial.print(reverse,DEC); Serial.print(" angles=");Serial.print(hipforward);
-                 //Serial.print("/"); Serial.print(hipbackward); Serial.print("/"); Serial.println(kneeup,DEC);
-      
-                 // mode = MODE_LEG;   // this stops auto-repeat of gamepad mode commands
-                 i += 9;  // length of command
+               //         reverse direction(0 or 1)
+               //         hipforward (angle)
+               //         hipbackward (angle), 
+               //         kneeup (angle)
+               //         kneedown(angle)
+               //         lean (angle)    make the robot body lean forward or backward during gait, adjusts front and back legs
+               //         cycle time (2 byte unsigned long)  length of time a complete gait cycle should take, in milliseconds
+              if (i <= packetLengthReceived - 10) {
+                 LastGgaittype = packetData[i+1];
+                 LastGreverse = packetData[i+2];
+                 LastGhipforward = packetData[i+3];
+                 LastGhipbackward = packetData[i+4];
+                 LastGkneeup = packetData[i+5];
+                 LastGkneedown = packetData[i+6];
+                 int lean = packetData[i+7];
+                 LastGtimeperiod = word(packetData[i+8], packetData[i+9]);
+
+                 LastGleanangle = constrain(lean-70,-70,70);  // lean comes in from 0 to 60, but we need to bring it down to the range -30 to 30
+
+                 gait_command(LastGgaittype, LastGreverse, LastGhipforward, LastGhipbackward, LastGkneeup, LastGkneedown, LastGleanangle, LastGtimeperiod);
+
+                 i += 10;  // length of command
                  startedStanding = -1; // don't sleep the legs during this command
-                 if (ServosDetached) { // wake up any sleeping servos
-                  attach_all_servos();
-                 }
-                 mode = MODE_LEG; // do not autorepeat prior gamepad commands during this command
               } else {
                   // again, we're short on bytes for this command so something is amiss
                   beep(BF_ERROR, BD_MED);
@@ -1738,6 +1802,10 @@ void processPacketData() {
         case 'P': // Pose command (from Scratch) sets all 12 robot leg servos in a single command
                   // special value of 255 means no change from prior commands, 254 means power down the servo
                   // This command is 13 bytes long: "P" then 12 values to set servo positions, in order from servo 0 to 11
+
+            if (ServosDetached) { // wake up any sleeping servos
+             attach_all_servos();
+            }
             if (i <= packetLengthReceived - 13) {
               for (int servo = 0; servo < 12; servo++) {
                  unsigned int position = packetData[i+1+servo];
@@ -1746,18 +1814,22 @@ void processPacketData() {
                  } else if (position > 180 && position < 254) {
                   position = 180;
                  }
-                 //Serial.print("POSE:"); Serial.print(servo); Serial.print(":"); Serial.println(position);
                  if (position < 254) {
                   setServo(servo, position);
+                  //Serial.print("POSE:servo="); Serial.print(servo); Serial.print(":pos="); Serial.println(position);
+                 } else if (position == 254) {
+                    // power down this servo
+                    servoDriver.setPin(servo,0,false); // stop pulses which will quickly detach the servo
+                    //Serial.print("POSE:servo="); Serial.print(servo); Serial.println(":DETACHED");
+                 } else {
+                    //Serial.print("POSE:servo="); Serial.print(servo); Serial.println(":pos=unchanged");
                  }
               }
               mode = MODE_LEG;   // this stops auto-repeat of gamepad mode commands
              
               i += 13;  // length of pose command
               startedStanding = -1; // don't sleep the legs when a specific LEG command was received
-              if (ServosDetached) { // wake up any sleeping servos
-               attach_all_servos();
-              }
+
               break;
             } else {
               // again, we're short on bytes for this command so something is amiss
@@ -1907,8 +1979,8 @@ void loop() {
 
     digitalWrite(13, HIGH);   // LED13 is set to steady on in bluetooth mode
     if (millis() > ReportTime) {
-          ReportTime = millis() + 1000;
-          Serial.println("RC Mode");
+          ReportTime = millis() + 2000;
+          Serial.print("RC Mode:"); Serial.print(ServosDetached); Serial.write(lastCmd); Serial.write(mode); Serial.write(submode); Serial.println("");
     }
     int gotnewdata = receiveDataHandler();  // handle any new incoming data first
     //Serial.print(gotnewdata); Serial.print(" ");
@@ -1932,14 +2004,14 @@ void loop() {
         }
         long losstime = millis() - LastValidReceiveTime;
         Serial.print("LOS"); Serial.println(losstime);
-        return;
+        return;  // don't repeat commands if we haven't seen valid data in a while
       }
 
     if (gotnewdata == 0) {
       // we didn't receive any new instructions so repeat the last command unless it was binary
       // or unless we're in fight adjust mode
       if (lastCmd == -1) {
-        //Serial.print("-");
+        Serial.println("REP");
         return;
       }
 
@@ -1959,13 +2031,17 @@ void loop() {
     if (mode == MODE_LEG) {
       //Serial.print("l");
       return;
+    } else if (mode == MODE_GAIT) {
+        // repeat the last Gait command (from scratch typically)
+        gait_command(LastGgaittype, LastGreverse, LastGhipforward, LastGhipbackward, LastGkneeup, LastGkneedown, LastGleanangle, LastGtimeperiod);
+        return;
     }
     //
     // Now we're either repeating the last command, or reading the new bluetooth command
     //
     
     switch(lastCmd) {
-      case '?': //BlueTooth.println("Vorpal H12"); 
+      case '?': //BlueTooth.println("Vorpal Hexapod"); 
         break;
       case 'W': 
         mode = MODE_WALK; 
