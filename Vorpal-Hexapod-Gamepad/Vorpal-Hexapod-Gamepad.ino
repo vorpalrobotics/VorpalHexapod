@@ -1,5 +1,10 @@
 // Copyright (C) 2017 Vorpal Robotics, LLC.
 
+const char *Version = "#V1r8k";
+
+// This is the code that runs on the robot in the Vorpal The Hexapod project.
+
+
 //////////// For more information:
 // Main website: http://www.vorpalrobotics.com
 // Store (for parts and kits): http://store.vorpalrobotics.com
@@ -26,9 +31,7 @@
 // a Nano with an FT232 usb serial IO chip rather than the cheaper CH34x chip, because the FT232 will work much more seamlessly
 // with Mac computers for use with the Scratch Features. If you don't care about using Scratch on Mac then it doesn't matter.
 
-// This version fixes some issues with Scratch Record/Play
-
-const char *Version = "#V1r8k";
+// This version fixes some issues with Scratch Record/Play and implements trim mode
 
 int debugmode = 1;          // Set to 1 to get more debug messages. Warning: this may make Scratch unstable so don't leave it on.
 
@@ -146,12 +149,13 @@ SoftwareSerial BlueTooth(A5,A4);  // connect bluetooth module Tx=A5=Yellow wire 
 #define MATRIX_NCOL 4
 
 long suppressButtonsUntil = 0;      // default is not to suppress until we see serial data
-int verbose = 0;
 File SDGamepadRecordFile;           // REC.txt, holds the gamepad record/play file
 const char SDGamepadRecordFileName[] = "REC.txt";   // never changes
 char SDScratchRecordFileName[4];    // three letters like W1f for walk mode 1 forward dpad, plus one more for end of string '\0'
 File SDScratchRecordFile;
 
+byte TrimMode = 0;
+byte verbose = 0;
 char ModeChars[] = {'W', 'D', 'F', 'R'};
 char SubmodeChars[] = {'1', '2', '3', '4'};
 
@@ -200,6 +204,7 @@ int longClick = 0;  // this will be set to 1 if the last matrix button pressed w
 int priorLongClick = 0; // used to track whether we should beep to indicate new longclick detected.
 
 #define LONGCLICKMILLIS 500
+#define VERYLONGCLICKMILLIS 1000
 
 // find out which button is pressed, the first one found is returned
 int scanmatrix() {
@@ -229,13 +234,18 @@ int scanmatrix() {
           CurSubCmd = SubmodeChars[col];
         }
         int curmatrix = row*MATRIX_NROW+col;
+        int clicktime = millis() - curMatrixStartTime;
         if (curmatrix != priorMatrix) {
           curMatrixStartTime = millis();
           priorMatrix = curmatrix;
           longClick = priorLongClick = 0;
-        } else if (millis() - curMatrixStartTime > LONGCLICKMILLIS) {
+        } else if (clicktime > LONGCLICKMILLIS) {
           // User has been holding down the same button continuously for a long time
-          longClick = 1;
+          if (clicktime > VERYLONGCLICKMILLIS) {
+            longClick = 2;
+          } else {
+            longClick = 1;
+          }
         }
         return curmatrix;
       }
@@ -422,10 +432,12 @@ void removeAllRecordFiles() {
 #endif
 }
 
-int sendbeep() {
+int sendbeep(int noheader) {
     unsigned int beepfreqhigh = highByte(BeepFreq);
     unsigned int beepfreqlow = lowByte(BeepFreq);
-    BlueTooth.print("B");
+    if (!noheader) {
+      BlueTooth.print("B");
+    }
     BlueTooth.write(beepfreqhigh);
     BlueTooth.write(beepfreqlow);
 
@@ -435,7 +447,12 @@ int sendbeep() {
     BlueTooth.write(beepdurlow);
 
     // return checksum info
-    return 'B'+beepfreqhigh+beepfreqlow+beepdurhigh+beepdurlow;
+    if (noheader) {
+      return beepfreqhigh+beepfreqlow+beepdurhigh+beepdurlow;
+    } else {
+      return 'B'+beepfreqhigh+beepfreqlow+beepdurhigh+beepdurlow;
+    }
+
 }
 
 void SendNextRecordedFrame(File file, char *filename, int loop) {
@@ -499,7 +516,7 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
               Serial.print("#"); Serial.write(c); Serial.print("("); Serial.print(c); Serial.println(")");
 #endif
             }
-            checksum += sendbeep();
+            checksum += sendbeep(0);
             setBeep(0,0); // clear the beep since we've already sent it out
             checksum = (checksum % 256);
             BlueTooth.write(checksum);
@@ -633,6 +650,11 @@ void RecordPlayHandler() {
 }
 
 void setup() {
+  // right away, see if we're supposed to be in trim mode
+  if (scanmatrix() == WALK_1) {
+    Serial.println("#trim");
+    TrimMode = 1;
+  }
   // make a characteristic flashing pattern to indicate the gamepad code is loaded.
   pinMode(13, OUTPUT);
   for (int i = 0; i < 3; i++) {
@@ -836,10 +858,57 @@ int handleSerialInput() {
   return dataread;
 }
 
+void send_trim(int matrix, int dpad) {
+    int trim = dpad;
+    
+    if (matrix >= REC_RECORD) {
+      Serial.print("TRIM-MATRIX=");Serial.println(matrix);
+      switch (matrix) {
+        case REC_RECORD: 
+          if (longClick == 2) {  // only do this on a very long click
+            trim = 'S';
+          }
+          break;
+        case REC_PLAY:    trim = 'P'; break;
+        case REC_REWIND:  trim = 'R'; break;
+        case REC_ERASE:
+          if (longClick == 2) { // only do this on a very long click
+            trim = 'E';
+          }
+          break;
+      }
+    }
+    // send the trim command
+
+    int two = 2;
+    BlueTooth.print("V1");
+    BlueTooth.write(two);
+    BlueTooth.write('T');
+    BlueTooth.write(trim);
+
+    unsigned int checksum = two + 'T' + trim;
+    checksum = (checksum % 256);
+    BlueTooth.write(checksum);
+}
+
 void loop() {
   int matrix = scanmatrix();
+  CurDpad = decode_button(analogRead(DpadPin));
+  
   if (debugmode && matrix != -1) {
     Serial.print("#MA:LC=");Serial.print(longClick); Serial.print("m:"); Serial.println(matrix);
+  }
+  
+  if (debugmode && CurDpad != 's') {
+    //Serial.print("#DP:"); Serial.println(CurDpad);
+  }
+
+  if (TrimMode) {
+    // special mode where we just transmit the DPAD buttons or the buttons on the record line in a special way.
+    if (CurDpad != 's') { Serial.print("#TRIM:"); Serial.println(CurDpad); }
+    send_trim(matrix, CurDpad);
+    delay(200);
+    return;
   }
 
   if (priormatrix != matrix) {  // the matrix button pressed has changed from the prior loop iteration
@@ -983,12 +1052,6 @@ void loop() {
   }
 
   priormatrix = matrix;
-  
-  CurDpad = decode_button(analogRead(DpadPin));
-
-  if (debugmode && CurDpad != 's') {
-    Serial.print("#DPAD="); Serial.println(CurDpad);
-  }
 
   //
   // The following code handles the Scratch recording to a mode button feature
@@ -1069,7 +1132,7 @@ void loop() {
     BlueTooth.write(CurSubCmd);
     BlueTooth.write(CurDpad);
 
-    unsigned int checksum = sendbeep();
+    unsigned int checksum = sendbeep(0);
 
     checksum += eight+CurCmd+CurSubCmd+CurDpad;
     checksum = (checksum % 256);

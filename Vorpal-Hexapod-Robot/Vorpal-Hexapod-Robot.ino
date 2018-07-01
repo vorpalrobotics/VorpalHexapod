@@ -1,8 +1,17 @@
-// This version defaults to Analog Servo Mode
+
 ////////////////////////////////////////////////////////////////////////////////
-//           Vorpal Combat Hexapod Control Program  Version: V1R8j
+//           Vorpal Combat Hexapod Control Program  Version: V1R8k
 //
 // Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
+
+//////////// For more information:
+// Main website:                  http://www.vorpalrobotics.com
+// Store (for parts and kits):    http://store.vorpalrobotics.com
+// Wiki entry for this project:   http://vorpalrobotics.com/wiki/index.php?title=Vorpal_The_Hexapod
+// Wiki on radio protocol:        http://vorpalrobotics.com/wiki/index.php/Vorpal_The_Hexapod_Radio_Protocol_Technical_Information
+// Wiki on our other projects:    http://www.vorpalrobotics.com/wiki
+
+///////////  License:
 //
 // This work is licensed under the Creative Commons 
 // Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -75,6 +84,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <SoftwareSerial.h>
 #include <SPI.h>
 #include <Pixy.h>
+#include <EEPROM.h>
 
 
 int FreqMult = 1;   // PWM frequency multiplier, use 1 for analog servos and up to about 3 for digital.
@@ -84,9 +94,10 @@ int FreqMult = 1;   // PWM frequency multiplier, use 1 for analog servos and up 
                     // or short jumper wire.
 
 // NOTE: For digital servos such as Genuine Tower Pro MG90S or Turnigy MG90S we recommend putting
-// a small O-ring on the hip servo shaft before putting the servo horn on. This will reduce or eliminate
+// a small O-ring or rubber washer on the hip servo shaft before putting the servo horn on. This will reduce or eliminate
 // "hunting" behavior which can cause the servo to rapidly oscillate around the target position. Adjusting
 // the servo horn screw tightness to be just tight enough to stop any hunting is recommended.
+// This is not needed for analog servos and it is not needed for the Vorpal MG90 branded servos.
 
 Pixy CmuCam5; // cmu cam 5 support as an SPI device
 
@@ -205,6 +216,7 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 #define MODE_RECORD 'R'
 #define MODE_LEG    'L'       // comes from scratch
 #define MODE_GAIT   'G'       // comes from scratch
+#define MODE_TRIM   'T'       // gamepad in trim mode
 
 #define SUBMODE_1 '1'
 #define SUBMODE_2 '2'
@@ -214,6 +226,7 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 #define BATTERYSAVER 5000   // milliseconds in stand mode before servos all detach to save power and heat buildup
 
 short ServoPos[2*NUM_LEGS];
+byte ServoTrim[2*NUM_LEGS];  // trim values for fine adjustments to servo horn positions
 long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
 long LastReceiveTime = 0;   // last time we got a bluetooth packet
 long LastValidReceiveTime = 0;  // last time we got a completely valid packet including correct checksum
@@ -228,6 +241,31 @@ void beep(int f, int t) {
 
 void beep(int f) {  // if no second param is given we'll default to 250 milliseconds for the beep
   beep(f, 250);
+}
+
+///////////////////////////////////////////////////////////////
+// Trim functions
+///////////////////////////////////////////////////////////////
+byte TrimInEffect = 1;
+byte TrimCurLeg = 0;
+byte TrimPose = 0;
+#define TRIM_ZERO 127   // this value is the midpoint of the trim range (a byte)
+
+void save_trims() {
+  Serial.print("SAVE TRIMS:");
+  for (int i = 0; i < NUM_LEGS*2; i++) {
+    EEPROM.update(i+1, ServoTrim[i]);
+    Serial.print(ServoTrim[i]); Serial.print(" ");
+  }
+  Serial.println("");
+  EEPROM.update(0, 'V');
+
+}
+void erase_trims() {
+  Serial.println("ERASE TRIMS");
+  for (int i = 0; i < NUM_LEGS*2; i++) {
+    ServoTrim[i] = TRIM_ZERO;
+  }
 }
 
 // This function sets the positions of both the knee and hip in 
@@ -1313,9 +1351,28 @@ void resetServoDriver() {
 }
 
 void setup() {
-
+  Serial.begin(9600);
   pinMode(BeeperPin, OUTPUT);
   beep(200);
+
+  // read in trim values from eeprom if available
+  if (EEPROM.read(0) == 'V') {
+    // if the first byte in the eeprom is a capital letter V that means there are trim values
+    // available. Note that eeprom from the factory is set to all 255 values.
+    Serial.print("TRIMS: ");
+    for (int i = 0; i < NUM_LEGS*2; i++) {
+      ServoTrim[i] = EEPROM.read(i+1);
+      Serial.print(ServoTrim[i]-TRIM_ZERO); Serial.print(" ");
+    }
+    Serial.println("");
+  } else {
+    Serial.println("TRIMS:unset");
+    // init trim values to zero, no trim
+    for (int i = 0; i < NUM_LEGS*2; i++) {
+      ServoTrim[i] = TRIM_ZERO;   // this is the middle of the trim range and will result in no trim
+    }
+  }
+  
   // make a characteristic flashing pattern to indicate the robot code is loaded (as opposed to the gamepad)
   // There will be a brief flash after hitting the RESET button, then a long flash followed by a short flash.
   // The gamepaid is brief flash on reset, short flash, long flash.
@@ -1342,7 +1399,7 @@ void setup() {
   digitalWrite(A2, LOW);
 
   delay(300); // give hardware a chance to come up and stabalize
-  Serial.begin(9600);
+
   BlueTooth.begin(38400);
 
   BlueTooth.println("");
@@ -1377,16 +1434,71 @@ void setup() {
   yield();
 }
 
-
+// setServo is the lowest level function for setting servo positions.
+// It handles trims as well as monitoring whether hips might be crashing into
+// each other.
 
 void setServo(int servonum, int position) {
-  int origpos = position;
+  ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
+  checkForCrashingHips(); // detects situations were servos have been commanded to crash into each other
+                          // (such as a bad scratch program) and sets them back a bit to avoid stalling and overheating
+
+  position = ServoPos[servonum];  // checkForCrashingHips may have modified this to avoid a crash
   
   int p = map(position,0,180,SERVOMIN,SERVOMAX);
+  
+  if (TrimInEffect) {
+    //Serial.print("Trim leg "); Serial.print(servonum); Serial.print(" "); Serial.println(ServoTrim[servonum] - TRIM_ZERO);
+    p += ServoTrim[servonum] - TRIM_ZERO;   // adjust microseconds by trim value which is renormalized to the range -127 to 128    
+  }
+
   servoDriver.setPWM(servonum, 0, p);
-  ServoPos[servonum] = origpos;  // keep data on where the servo was last commanded to go
+                          
   // DEBUG: Uncomment the next line to debug setservo problems. It causes some lagginess due to all the printing
   //Serial.print("SS:");Serial.print(servonum);Serial.print(":");Serial.println(position);
+}
+
+// checkForCrashingHips takes a look at the leg angles and tries to figure out if the commanded
+// positions might cause servo stall.  Now the correct way to do this would be to do fairly extensive
+// trig computations to see if the edges of the hips touch. However, Arduino isn't really set up to
+// do complicated trig stuff. It would take a lot of code space and a lot of time. So we're just using
+// a simple approximation. In practice it stops very hard stall situations. Very minor stalls (where the
+// motor is commanded a few degress farther than it can physically go) may still occur, but those won't
+// draw much power (the current draw is proportional to how far off the mark the servo is).
+
+void checkForCrashingHips() {
+
+  // for now turn this feature off
+  return;
+  
+  for (int leg = 0; leg < NUM_LEGS; leg++) {
+    if (ServoPos[leg] > 95) {
+      // if this leg is beyond 90 degrees then it could be crashing with the next leg
+      int nextleg = leg+1;
+      if (nextleg > NUM_LEGS) nextleg = 0;  // wrap back to 0
+
+      // the next leg needs to be under 85 for a crash to be possible
+      if (ServoPos[nextleg] > 85)
+        continue;
+
+      // An estimate of whether they're crashing is just to see if the amount the next is under 85
+      // plus the amount of the prior is over 95 is greater than a threshhold
+      int thresh = ServoPos[leg]-95 + 85-ServoPos[nextleg];
+#define CRASHTHRESH 50
+      if (thresh > 50) {
+        Serial.print("CRASH DETECTED LEG "); Serial.print(leg); Serial.print(" and "); Serial.print(nextleg);
+        // move them both half the difference
+        int move = (thresh - 50)/2;
+        ServoPos[leg] -= move;
+        ServoPos[nextleg] += move;
+      }
+      
+    } else if (ServoPos[leg] < 85) {
+      // this leg could be crashing with the prior leg
+      int checkleg = leg-1;
+      if (checkleg < 0) checkleg = 5;
+    }
+  }
 }
 
 #define ULTRAOUTPUTPIN 7      // TRIG
@@ -1457,11 +1569,14 @@ sendSensorData() {
 
 }
 
-#define P_WAITING_FOR_HEADER 0
-#define P_WAITING_FOR_VERSION 1
-#define P_WAITING_FOR_LENGTH 2
-#define P_READING_DATA 3
-#define P_WAITING_FOR_CHECKSUM 4
+// states for processing incoming bluetooth data
+
+#define P_WAITING_FOR_HEADER      0
+#define P_WAITING_FOR_VERSION     1
+#define P_WAITING_FOR_LENGTH      2
+#define P_READING_DATA            3
+#define P_WAITING_FOR_CHECKSUM    4
+#define P_SIMPLE_WAITING_FOR_DATA 5
 
 int pulselen = SERVOMIN;
 
@@ -1479,11 +1594,12 @@ void packetErrorChirp(char c) {
   packetState = P_WAITING_FOR_HEADER; // reset to initial state if any error occurs
 }
 
-int lastCmd = 's';
-int priorCmd = 0;
-int mode = MODE_WALK; // default
-int submode = SUBMODE_1;     // standard submode.
-int timingfactor = 1;   // default is full speed. If this is greater than 1 it multiplies the cycle time making the robot slower
+byte lastCmd = 's';
+byte priorCmd = 0;
+byte mode = MODE_WALK; // default
+byte submode = SUBMODE_1;     // standard submode.
+byte timingfactor = 1;   // default is full speed. If this is greater than 1 it multiplies the cycle time making the robot slower
+short priorDialMode = -1;
 
 int receiveDataHandler() {
 
@@ -1503,10 +1619,14 @@ int receiveDataHandler() {
         if (c == 'V') {
           packetState = P_WAITING_FOR_VERSION;
           //Serial.print("GOT V ");
+        } else if (c == '@') {  // simplified mode, makes it easier for people to write simple apps to control the robot
+          packetState = P_SIMPLE_WAITING_FOR_DATA;
+          packetLengthReceived = 0; // we'll be waiting for exactly 3 bytes like 'D1b' or 'F3s'
+          //Serial.print("GOT @");
         } else {
           // may as well flush up to the next header
           int flushcount = 0;
-          while (BlueTooth.available()>0 && (BlueTooth.peek() != 'V')) {
+          while (BlueTooth.available()>0 && (BlueTooth.peek() != 'V') && (BlueTooth.peek() != '@')) {
             BlueTooth.read(); // toss up to next possible header start
             flushcount++;
           }
@@ -1577,7 +1697,7 @@ int receiveDataHandler() {
           if (sum != c) {
             packetErrorChirp(c);
             Serial.print("CHECKSUM FAIL "); Serial.print(sum); Serial.print("!="); Serial.print((int)c);
-            Serial.print("len=");Serial.println(packetLength);
+            Serial.print(" len=");Serial.println(packetLength);
             packetState = P_WAITING_FOR_HEADER;  // giving up on this packet, let's wait for another
           } else {
             LastValidReceiveTime = millis();  // set the time we received a valid packet
@@ -1588,6 +1708,33 @@ int receiveDataHandler() {
           }
         }
         break;
+
+        case P_SIMPLE_WAITING_FOR_DATA:
+          packetData[packetLengthReceived++] = c;
+          if (packetLengthReceived == 3) {
+              // at this point, we're done no matter whether the packet is good or not
+              // so might as well set the new state right up front
+              packetState = P_WAITING_FOR_HEADER;
+              
+             // this simple mode consists of an at-sign followed by three letters that indicate the
+             // button and mode, such as: @W2f means walk mode two forward. As such, there is no
+             // checksum, but we can be pretty sure it's valid because there are strong limits on what
+             // each letter can be. The following large conditional tests these constraints
+             if ( (packetData[0] != 'W' && packetData[0] != 'D' && packetData[0] != 'F') ||
+                    (packetData[1] != '1' && packetData[1] != '2' && packetData[1] != '3' && packetData[1] != '4') ||
+                    (packetData[2] != 'f' && packetData[2] != 'b' && packetData[2] != 'l' && packetData[2] != 'r' && 
+                       packetData[2] != 'w' && packetData[2] != 's')) {
+  
+                        // packet is bad, just toss it.
+                        return 0;
+            } else {
+              // we got a good combo of letters in simplified mode
+              processPacketData();
+              return 1;
+            }
+          }
+          //Serial.print("CHAR("); Serial.print(c); Serial.print("/"); Serial.write(c); Serial.println(")");
+          break;
     }
   }
 
@@ -1651,9 +1798,11 @@ void processPacketData() {
       case 'D':
         // gamepad mode change
         if (i <= packetLengthReceived - 3) {
+
           mode = packetData[i];
           submode = packetData[i+1];
           lastCmd = packetData[i+2];
+          //Serial.print("GP="); Serial.write(mode);Serial.write(submode);Serial.write(lastCmd);Serial.println("");
           i += 3; // length of mode command is 3 bytes
           continue;
         } else {
@@ -1732,7 +1881,6 @@ void processPacketData() {
         }
         break;
 
-#if 1
      case 'G': // Gait command (coming from Scratch most likely). This command is always 10 bytes long
                // params: literal 'G', 
                //         Gait type: 0=tripod, 1=turn in place CW from top, 2=ripple, 3=sidestep
@@ -1766,7 +1914,7 @@ void processPacketData() {
                   return;  // toss the rest of the packet                
               }
               break;
-#endif
+
       case 'L': // leg motion command (coming from Scratch most likely). This command is always 5 bytes long
         if (i <= packetLengthReceived - 5) {
            unsigned int knee = packetData[i+2];
@@ -1797,8 +1945,101 @@ void processPacketData() {
           Serial.println("PKERR:L:Short");
           return;  // toss the rest of the packet
         }
+        break;
 
-#if 1
+      case 'T': // Trim command
+
+      // The trim command is always just a single operator, either a DPAD button (f, b, l, r, s, w) or the 
+      // special values S (save), E (erase), P (toggle pose), or R (reset temporarily to untrimmed stance).
+      // The meanings are:
+      // f    Raise current knee 1 microsecond
+      // b    Lower current knee 1 microsecond
+      // l    Move current hip clockwise
+      // r    Move current hip counterclockwise
+      // w    Move to next leg, the leg will twitch to indicate
+      // s    Do nothing, just hold steady
+      // S    Save all the current trim values
+      // P    Toggle the pose between standing and adjust mode
+      // R    Show untrimmed stance in the current pose
+      // E    Erase all the current trim values
+        if (i <= packetLengthReceived - 2) {
+          
+            unsigned int command = packetData[i+1];
+            
+            Serial.print("Trim Cmd: "); Serial.write(command); Serial.println("");
+
+           i += 2;  // length of trim command
+           startedStanding = -1; // don't sleep the legs when a specific LEG command was received
+           mode = MODE_LEG;
+           if (ServosDetached) { // wake up any sleeping servos
+            attach_all_servos();
+           }
+
+          TrimInEffect = 1;   // by default we'll show trims in effect
+          
+           // Interpret the command received
+           switch (command) {
+            case 'f':
+            case 'b':
+              ServoTrim[TrimCurLeg+NUM_LEGS] = constrain(ServoTrim[TrimCurLeg+NUM_LEGS]+((command=='b')?-1:1),0,255);
+              beep(300,30);
+              break;
+
+            case 'l':
+            case 'r':
+              ServoTrim[TrimCurLeg] = constrain(ServoTrim[TrimCurLeg]+((command=='r')?-1:1),0,255);
+              beep(500,30);
+              break;
+                          
+            case 'w':
+              TrimCurLeg = (TrimCurLeg+1)%NUM_LEGS;
+              setKnee(TrimCurLeg, 120);
+              beep(100, 30);
+              delay(500);  // twitch the leg up to give the user feedback on what the new leg being trimmed is
+                           // this delay also naturally debounces this command a bit
+              break;
+            case 'R':
+              TrimInEffect = 0;
+              beep(100,30);
+              break;
+            case 'S':
+              save_trims();
+              beep(800,1000);
+              delay(500);
+              break;
+            case 'P':
+              TrimPose = 1 - TrimPose;  // toggle between standing (0) and adjust mode (1)
+              beep(500,30);
+              break;
+            case 'E':
+              erase_trims();
+              beep(1500,1000);
+              break;
+              
+            default:
+            case 's':
+              // do nothing.
+              break;
+           }
+
+           // now go ahead and implement the trim settings to display the result
+           for (int i = 0; i < NUM_LEGS; i++) {
+            setHip(i, HIP_NEUTRAL);
+            if (TrimPose == 0) {
+              setKnee(i, KNEE_STAND);
+            } else {
+              setKnee(i, KNEE_NEUTRAL);
+            }
+           }
+           break;
+        } else {
+          // again, we're short on bytes for this command so something is amiss
+          beep(BF_ERROR, BD_MED);
+          Serial.println("PKERR:T:Short");
+          return;  // toss the rest of the packet
+        }
+        break;
+
         case 'P': // Pose command (from Scratch) sets all 12 robot leg servos in a single command
                   // special value of 255 means no change from prior commands, 254 means power down the servo
                   // This command is 13 bytes long: "P" then 12 values to set servo positions, in order from servo 0 to 11
@@ -1837,7 +2078,7 @@ void processPacketData() {
               Serial.println("PKERR:P:Short");
               return;  // toss the rest of the packet
             }
-#endif
+            break;  // I don't think we can actually get here.
 
       case 'S':   // sensor request
         // CMUCam seems to require it's own power supply so for now we're not doing that, will get it
@@ -1907,6 +2148,7 @@ void checkForServoSleep() {
 }
 
 long ReportTime = 0;
+long SuppressModesUntil = 0;
 
 void loop() {
 
@@ -1915,10 +2157,40 @@ void loop() {
   ////////////////////
   int p = analogRead(A0);
   int factor = 1;
+
+#define MODE_STAND 0
+#define MODE_ADJUST 1
+#define MODE_TEST 2
+#define MODE_DEMO 3
+#define MODE_RC 4
+
+  int dialmode;
+  
+  if (p < 50) {
+    dialmode = MODE_STAND;
+  } else if (p < 150) {
+    dialmode = MODE_ADJUST;
+  } else if (p < 300) {
+    dialmode = MODE_TEST;
+  } else if (p < 750) {
+    dialmode = MODE_DEMO;
+  } else {
+    dialmode = MODE_RC;
+  }
+
+  if (dialmode != priorDialMode && priorDialMode != -1) {
+    beep(100+100*dialmode,60);   // audio feedback that a new mode has been entered
+    SuppressModesUntil = millis() + 1000;
+  }
+  priorDialMode = dialmode;
+
+  if (millis() < SuppressModesUntil) {
+    return;
+  }
   
   //Serial.print("Analog0="); Serial.println(p);
   
-  if (p < 50) { // STAND STILL MODE
+  if (dialmode == MODE_STAND) { // STAND STILL MODE
     
     digitalWrite(13, LOW);  // turn off LED13 in stand mode
     //resetServoDriver();
@@ -1935,7 +2207,7 @@ void loop() {
           Serial.println("");
     }
 
-  } else if (p < 150) {  // Servo adjust mode, put all servos at 90 degrees
+  } else if (dialmode == MODE_ADJUST) {  // Servo adjust mode, put all servos at 90 degrees
     
     digitalWrite(13, flash(100));  // Flash LED13 rapidly in adjust mode
     stand_90_degrees();
@@ -1945,7 +2217,7 @@ void loop() {
           Serial.println("AdjustMode");
     }
     
-  } else if (p < 300) {   // Test each servo one by one
+  } else if (dialmode == MODE_TEST) {   // Test each servo one by one
     pinMode(13, flash(500));      // flash LED13 moderately fast in servo test mode
     
     for (int i = 0; i < 12; i++) {
@@ -1965,7 +2237,7 @@ void loop() {
       Serial.print("SERVO: "); Serial.println(i);
     }
     
-  } else if (p < 750) {  // demo mode
+  } else if (dialmode == MODE_DEMO) {  // demo mode
 
     digitalWrite(13, flash(2000));  // flash LED13 very slowly in demo mode
     random_gait(timingfactor);
