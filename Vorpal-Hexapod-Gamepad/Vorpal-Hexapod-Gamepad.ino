@@ -33,14 +33,15 @@ const char *Version = "#V1r8k";
 
 // This version fixes some issues with Scratch Record/Play and implements trim mode
 
-int debugmode = 1;          // Set to 1 to get more debug messages. Warning: this may make Scratch unstable so don't leave it on.
+int debugmode = 0;          // Set to 1 to get more debug messages. Warning: this may make Scratch unstable so don't leave it on.
 
-#define DEBUG_SD  1          // Set this to 1 if you want debugging info about the SD card and record/play functions.
+#define DEBUG_SD  0         // Set this to 1 if you want debugging info about the SD card and record/play functions.
                             // This is very verbose and may affect scratch performance so only do it if you have to.
+                            // You will likely see things running slower than normal in scratch record/play mode for example.
                             // It also takes up a lot of memory and you might get warnings from Arduino about too little
                             // RAM being left. But it seems to work for me even with that warning.
 
-#define DEBUG_BUTTONS 1     // There is some manufacturer who is selling defective DPAD modules that look just like the
+#define DEBUG_BUTTONS 0     // There is some manufacturer who is selling defective DPAD modules that look just like the
                             // ones sold by Vorpal Robotics, and they have a different set of output values for each
                             // button (and only use a small percentage of the range of values, which is why I consider
                             // them to be defective). If you get one of those, set this define to 1 and you'll get debug info sent
@@ -148,7 +149,7 @@ SoftwareSerial BlueTooth(A5,A4);  // connect bluetooth module Tx=A5=Yellow wire 
 #define MATRIX_NROW 4
 #define MATRIX_NCOL 4
 
-long suppressButtonsUntil = 0;      // default is not to suppress until we see serial data
+unsigned long suppressButtonsUntil = 0;      // default is not to suppress until we see serial data
 File SDGamepadRecordFile;           // REC.txt, holds the gamepad record/play file
 const char SDGamepadRecordFileName[] = "REC.txt";   // never changes
 char SDScratchRecordFileName[4];    // three letters like W1f for walk mode 1 forward dpad, plus one more for end of string '\0'
@@ -170,7 +171,7 @@ void println() {
   Serial.println("");
 }
 
-void debug(char *s) {
+void debug(const char *s) {
   if (verbose||suppressButtonsUntil >= millis()) {
     Serial.print(s);
   }
@@ -343,10 +344,10 @@ char decode_button(int b) {
 
 int GRecState = REC_STOPPED;  // gamepad recording state
 int SRecState = SREC_STOPPED; // scratch recording state
-long GRecNextEventTime = 0; // next time to record or play a gamepad record/play event 
-long SRecNextEventTime = 0; // next time to play a scratch recording event
+unsigned long GRecNextEventTime = 0; // next time to record or play a gamepad record/play event 
+unsigned long SRecNextEventTime = 0; // next time to play a scratch recording event
 
-long NextTransmitTime = 0;  // next time to send a command to the robot
+unsigned long NextTransmitTime = 0;  // next time to send a command to the robot
 char PlayLoopMode = 0;
 
 void setBeep(int f, int d) {
@@ -364,7 +365,7 @@ void setBeep(int f, int d) {
 // effectively just rewinds it.
 // Returns 1 if the open worked, otherwise 0
 //
-int openScratchRecordFile(char *cmd, char *subcmd, char *dpad) {
+int openScratchRecordFile(char cmd, char subcmd, char dpad) {
   if (SDScratchRecordFile) {  // if one is already open, close it
     SDScratchRecordFile.close();
   }
@@ -388,7 +389,7 @@ int openScratchRecordFile(char *cmd, char *subcmd, char *dpad) {
 
 long LastRecChirp;  // keeps track of the last time we sent a "recording is happening" reminder chirp to the user
 
-void removeScratchRecordFile(char *cmd, char *subcmd, char *dpad) {
+void removeScratchRecordFile(char cmd, char subcmd, char dpad) {
   SDScratchRecordFile.close();  // it's safe to do this even if the file is not open
 
   SDScratchRecordFileName[0] = cmd;
@@ -410,7 +411,7 @@ void removeAllRecordFiles() {
   // potential filenames) and takes a lot less codespace, which is at a premium on a nano
 
 #if DEBUG_SD
-  //Serial.print("#DS");Serial.println(millis());
+  Serial.print("#DS");Serial.println(millis());
 #endif
   char fname[4];
   char mode[] = "WDF";
@@ -433,6 +434,11 @@ void removeAllRecordFiles() {
 }
 
 int sendbeep(int noheader) {
+
+#if DEBUG_SD
+     Serial.print("#BTBEEP="); Serial.print("B+"); Serial.print(BeepFreq); Serial.print("+"); Serial.println(BeepDur);
+#endif
+
     unsigned int beepfreqhigh = highByte(BeepFreq);
     unsigned int beepfreqlow = lowByte(BeepFreq);
     if (!noheader) {
@@ -495,7 +501,7 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
         BlueTooth.print("V1");
         BlueTooth.write(length+5);  // include 5 more bytes for beep
 #if DEBUG_SD
-        Serial.print("#V1L="); Serial.println(length+5);
+        Serial.print("#V1 L="); Serial.println(length+5);
 #endif
         {
             int checksum = length+5;  // the length byte is included in the checksum
@@ -543,7 +549,11 @@ void RecordPlayHandler() {
       SRecState = SREC_STOPPED;
       return;
      }
-     SendNextRecordedFrame(SDScratchRecordFile, SDScratchRecordFileName, 1); // always loop scratch recordings
+
+     if (millis() > NextTransmitTime) {
+          NextTransmitTime = millis() + 100;
+          SendNextRecordedFrame(SDScratchRecordFile, SDScratchRecordFileName, 1); // always loop scratch recordings
+     }
 
      return;  // in this case we don't need to continue with the rest of the code because we've taken care of both
               // scratch playing and gamepad recording from a scratch playback
@@ -590,7 +600,7 @@ void RecordPlayHandler() {
 #if DEBUG_SD
         Serial.print("#P:"); Serial.print(SDGamepadRecordFileName);Serial.print("@");Serial.print((long)SDGamepadRecordFile.position()); println();
 #endif
-        SendNextRecordedFrame(SDGamepadRecordFile, SDGamepadRecordFileName, PlayLoopMode);
+        SendNextRecordedFrame(SDGamepadRecordFile, (char *)SDGamepadRecordFileName, PlayLoopMode);
     } 
       break;
 
@@ -708,7 +718,7 @@ long curmatrixstarttime = 0;  // used to detect long tap for play button and era
                                       // module at the same time.
 
 // this little function prints out info to help debug state machine errors
-void scratcherror(char *state, char c) {
+void scratcherror(const char *state, char c) {
     Serial.print("#SER:"); Serial.print(state); Serial.print(":"); 
     Serial.print(c); Serial.print("("); Serial.write(c); Serial.println(")");
 }
@@ -774,7 +784,7 @@ int handleSerialInput() {
           } else {
             BlueTooth.print("V1");  // version 1 header
             BlueTooth.write(c);     // length of packet
-            if (SRecState = SREC_RECORDING) {
+            if (SRecState == SREC_RECORDING) {
               // we're also recording to a gamepad button so save the length byte
               SDScratchRecordFile.write(c);  // if this file is not open this won't crash anything, I checked the SD card library code
             }
@@ -816,9 +826,9 @@ int handleSerialInput() {
             ScratchState = SCR_WAITING_FOR_HEADER;
           } else if (c == 'D') {
             // delete all record files if final character is D
-#if DEBUG_SD
+
             Serial.println("#ERASED"); // leave this message even not in debug mode to confirm erase
-#endif
+
             removeAllRecordFiles();
             SRecState = SREC_STOPPED;
             ScratchState = SCR_WAITING_FOR_HEADER;
@@ -1108,7 +1118,7 @@ void loop() {
 
   RecordPlayHandler();  // handle the record/play mode
 
-  if (millis() > NextTransmitTime  && GRecState != REC_PLAYING & SRecState != SREC_PLAYING ) { // don't transmit joystick controls during replay mode!
+  if (millis() > NextTransmitTime  && GRecState != REC_PLAYING && SRecState != SREC_PLAYING ) { // don't transmit joystick controls during replay mode!
 
     // Packet consists of:
     // Byte 0: The letter "V" is used as a header. (Vorpal)

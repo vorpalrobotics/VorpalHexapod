@@ -229,7 +229,7 @@ short ServoPos[2*NUM_LEGS];
 byte ServoTrim[2*NUM_LEGS];  // trim values for fine adjustments to servo horn positions
 long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
 long LastReceiveTime = 0;   // last time we got a bluetooth packet
-long LastValidReceiveTime = 0;  // last time we got a completely valid packet including correct checksum
+unsigned long LastValidReceiveTime = 0;  // last time we got a completely valid packet including correct checksum
 
 void beep(int f, int t) {
   if (f > 0 && t > 0) {
@@ -928,7 +928,7 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
 }
 
 int ScamperPhase = 0;
-long NextScamperPhaseTime = 0;
+unsigned long NextScamperPhaseTime = 0;
 
 void gait_tripod_scamper(int reverse, int turn) {
 
@@ -1076,7 +1076,7 @@ void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int k
 
 int curGait = G_STAND;
 int curReverse = 0;
-long nextGaitTime = 0;
+unsigned long nextGaitTime = 0;
 
 void random_gait(int timingfactor) {
 
@@ -1472,32 +1472,21 @@ void checkForCrashingHips() {
   return;
   
   for (int leg = 0; leg < NUM_LEGS; leg++) {
-    if (ServoPos[leg] > 95) {
-      // if this leg is beyond 90 degrees then it could be crashing with the next leg
-      int nextleg = leg+1;
-      if (nextleg > NUM_LEGS) nextleg = 0;  // wrap back to 0
-
-      // the next leg needs to be under 85 for a crash to be possible
-      if (ServoPos[nextleg] > 85)
-        continue;
-
-      // An estimate of whether they're crashing is just to see if the amount the next is under 85
-      // plus the amount of the prior is over 95 is greater than a threshhold
-      int thresh = ServoPos[leg]-95 + 85-ServoPos[nextleg];
-#define CRASHTHRESH 50
-      if (thresh > 50) {
-        Serial.print("CRASH DETECTED LEG "); Serial.print(leg); Serial.print(" and "); Serial.print(nextleg);
-        // move them both half the difference
-        int move = (thresh - 50)/2;
-        ServoPos[leg] -= move;
-        ServoPos[nextleg] += move;
-      }
-      
-    } else if (ServoPos[leg] < 85) {
-      // this leg could be crashing with the prior leg
-      int checkleg = leg-1;
-      if (checkleg < 0) checkleg = 5;
+    if (ServoPos[leg] > 85) {
+      continue; // it's not possible to crash into the next leg in line unless the angle is 85 or less
     }
+    int nextleg = ((leg+1)%NUM_LEGS);
+    if (ServoPos[nextleg] < 100) {
+      continue;   // it's not possible for there to be a crash if the next leg is less than 100 degrees
+                  // there is a slight assymmetry due to the way the servo shafts are positioned, that's why
+                  // this number does not match the 85 number above
+    }
+    int diff = ServoPos[nextleg] - ServoPos[leg];
+    // There's a fairly linear relationship
+    if (diff < 85) {
+      continue;
+    }
+
   }
 }
 
@@ -1609,10 +1598,14 @@ int receiveDataHandler() {
     // uncomment the following lines if you're doing some serious packet debugging, but be aware this will take up so
     // much time you will drop some data. I would suggest slowing the gamepad/scratch sending rate to 4 packets per
     // second or slower if you want to use this.
-    //Serial.print(millis());
-    //Serial.print("'"); Serial.write(c); Serial.print("' ("); Serial.print((int)c); 
-    //Serial.print(")S="); Serial.print(packetState); Serial.print(" a="); Serial.print(BlueTooth.available()); Serial.println("");
-    //Serial.print(millis()); Serial.println("");
+#if 0
+unsigned long m = millis();
+//Serial.print(m);
+Serial.print("'"); Serial.write(c); Serial.print("' ("); Serial.print((int)c); 
+//Serial.print(")S="); Serial.print(packetState); Serial.print(" a="); Serial.print(BlueTooth.available()); Serial.println("");
+//Serial.print(m);
+Serial.println("");
+#endif
     
     switch (packetState) {
       case P_WAITING_FOR_HEADER:
@@ -1687,7 +1680,7 @@ int receiveDataHandler() {
 
         {
           unsigned int sum = packetLength;  // the length byte is part of the checksum
-          for (int i = 0; i < packetLength; i++) {
+          for (unsigned int i = 0; i < packetLength; i++) {
             // uncomment the next line if you need to see the packet bytes
             //Serial.print(packetData[i]);Serial.print("-");
             sum += packetData[i];
@@ -1783,14 +1776,14 @@ void gait_command(int gaittype, int reverse, int hipforward, int hipbackward, in
 
 void dumpPacket() { // this is purely for debugging, it can cause timing problems so only use it for debugging
   Serial.print("DMP:");
-  for (int i = 0; i < packetLengthReceived; i++) {
+  for (unsigned int i = 0; i < packetLengthReceived; i++) {
     Serial.write(packetData[i]); Serial.print("("); Serial.print(packetData[i]); Serial.print(")");
   }
   Serial.println("");
 }
 
 void processPacketData() {
-  int i = 0;
+  unsigned int i = 0;
   while (i < packetLengthReceived) {
     switch (packetData[i]) {
       case 'W': 
@@ -1871,7 +1864,7 @@ void processPacketData() {
               setServo(servo, pos);
             }
             i += 18; // length of raw servo move is 18 bytes
-            mode = MODE_LEG;  // suppress auto-repeat of gamepad commands when this is in progress\
+            mode = MODE_LEG;  // suppress auto-repeat of gamepad commands when this is in progress
             startedStanding = -1; // don't allow sleep mode while this is running
         } else {
           // again, we're short on bytes for this command so something is amiss
@@ -2106,7 +2099,7 @@ void processPacketData() {
 
 
 
-int flash(int t) {
+int flash(unsigned long t) {
   // the following code will return HIGH for t milliseconds
   // followed by LOW for t milliseconds.
   return (millis()%(2*t)) > t;
@@ -2124,8 +2117,8 @@ int flash(int t) {
 // may have too much friction on the leg hinges, or you may have a bad servo that's
 // drawing more power than usual. A bad BEC can also cause the issue.
 //
-long freqWatchDog = 0;
-long SuppressScamperUntil = 0;  // if we had to wake up the servos, suppress the power hunger scamper mode for a while
+unsigned long freqWatchDog = 0;
+unsigned long SuppressScamperUntil = 0;  // if we had to wake up the servos, suppress the power hunger scamper mode for a while
 
 void checkForServoSleep() {
 
@@ -2147,8 +2140,8 @@ void checkForServoSleep() {
   }
 }
 
-long ReportTime = 0;
-long SuppressModesUntil = 0;
+unsigned long ReportTime = 0;
+unsigned long SuppressModesUntil = 0;
 
 void loop() {
 
