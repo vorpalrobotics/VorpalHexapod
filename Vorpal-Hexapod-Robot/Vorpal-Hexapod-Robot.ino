@@ -4,12 +4,14 @@
 //
 // Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
 
+const char *Version = "#RV2r0";
+
 //////////// For more information:
 // Main website:                  http://www.vorpalrobotics.com
 // Store (for parts and kits):    http://store.vorpalrobotics.com
-// Wiki entry for this project:   http://vorpalrobotics.com/wiki/index.php?title=Vorpal_The_Hexapod
-// Wiki on radio protocol:        http://vorpalrobotics.com/wiki/index.php/Vorpal_The_Hexapod_Radio_Protocol_Technical_Information
-// Wiki on our other projects:    http://www.vorpalrobotics.com/wiki
+// Wiki main entry for hexapod:   http://vorpalrobotics.com/wiki/index.php?title=Vorpal_The_Hexapod
+// Wiki entry, radio protocol:    http://vorpalrobotics.com/wiki/index.php/Vorpal_The_Hexapod_Radio_Protocol_Technical_Information
+// Wiki entry, other projects:    http://www.vorpalrobotics.com/wiki
 
 ///////////  License:
 //
@@ -547,6 +549,8 @@ void gait_sidestep(int left, long timeperiod) {
   //Serial.print("PHASE: ");
   //Serial.println(phase);
 
+  transactServos();
+  
   switch (phase) {
     case 0:
       // Lift up tripod group 1 while group 2 goes to neutral setting
@@ -585,6 +589,7 @@ void gait_sidestep(int left, long timeperiod) {
       setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
       break;
   }
+  commitServos();
 }
 
 #endif
@@ -890,6 +895,7 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
   //Serial.print("PHASE: ");
   //Serial.println(phase);
 
+  transactServos(); // defer leg motions until after checking for crashes
   switch (phase) {
     case 0:
       // in this phase, center-left and noncenter-right legs raise up at
@@ -925,12 +931,17 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
       setLeg(TRIPOD2_LEGS, NOMOVE, kneedown, 0, 0, leanangle);
       break;  
   }
+  commitServos(); // implement all leg motions
 }
 
 int ScamperPhase = 0;
 unsigned long NextScamperPhaseTime = 0;
 
+long ScamperTracker = 0;
+
 void gait_tripod_scamper(int reverse, int turn) {
+
+  ScamperTracker += 2;  // for tracking if the user is over-doing it with scamper
 
   // this is a tripod gait that tries to go as fast as possible by not waiting
   // for knee motions to complete before beginning the next hip motion
@@ -951,11 +962,11 @@ void gait_tripod_scamper(int reverse, int turn) {
     hipbackward = HIP_BACKWARD;
   }
 
-#define FBSHIFT    15   // 40 shift front legs back, back legs forward, this much
+#define FBSHIFT    15   // shift front legs back, back legs forward, this much
 #define SCAMPERPHASES 6
 
-#define KNEEDELAY 30
-#define HIPDELAY 90
+#define KNEEDELAY 35   //30
+#define HIPDELAY 100   //90
 
   if (millis() >= NextScamperPhaseTime) {
     ScamperPhase++;
@@ -975,6 +986,7 @@ void gait_tripod_scamper(int reverse, int turn) {
 
   //Serial.print("ScamperPhase: "); Serial.println(ScamperPhase);
 
+  transactServos();
   switch (ScamperPhase) {
     case 0:
       // in this phase, center-left and noncenter-right legs raise up at
@@ -1014,6 +1026,7 @@ void gait_tripod_scamper(int reverse, int turn) {
       setLeg(TRIPOD1_LEGS, NOMOVE, KNEE_DOWN, 0);
       break;  
   }
+  commitServos();
 }
 
 // call gait_ripple with leanangle = 0
@@ -1041,6 +1054,8 @@ void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int k
   //Serial.print("PHASE: ");
   //Serial.println(phase);
 
+  transactServos();
+  
   if (phase == 18) {
     setLeg(ALL_LEGS, hipbackward, NOMOVE, FBSHIFT);
   } else {
@@ -1060,6 +1075,7 @@ void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int k
         break;     
     }
   }
+  commitServos();
 }
 
 #define G_STAND 0
@@ -1352,6 +1368,8 @@ void resetServoDriver() {
 
 void setup() {
   Serial.begin(9600);
+  Serial.println("");
+  Serial.println(Version);
   pinMode(BeeperPin, OUTPUT);
   beep(200);
 
@@ -1404,7 +1422,7 @@ void setup() {
 
   BlueTooth.println("");
   delay(250);
-  BlueTooth.println("Vorpal H12 starting!");
+  BlueTooth.println(Version);
 
   delay(250);
 
@@ -1435,15 +1453,12 @@ void setup() {
 }
 
 // setServo is the lowest level function for setting servo positions.
-// It handles trims as well as monitoring whether hips might be crashing into
-// each other.
+// It handles trims too.
+
+byte deferServoSet = 0;
 
 void setServo(int servonum, int position) {
   ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
-  checkForCrashingHips(); // detects situations were servos have been commanded to crash into each other
-                          // (such as a bad scratch program) and sets them back a bit to avoid stalling and overheating
-
-  position = ServoPos[servonum];  // checkForCrashingHips may have modified this to avoid a crash
   
   int p = map(position,0,180,SERVOMIN,SERVOMAX);
   
@@ -1452,10 +1467,25 @@ void setServo(int servonum, int position) {
     p += ServoTrim[servonum] - TRIM_ZERO;   // adjust microseconds by trim value which is renormalized to the range -127 to 128    
   }
 
-  servoDriver.setPWM(servonum, 0, p);
+  if (!deferServoSet) {
+    servoDriver.setPWM(servonum, 0, p);    
+  }
+
                           
   // DEBUG: Uncomment the next line to debug setservo problems. It causes some lagginess due to all the printing
   //Serial.print("SS:");Serial.print(servonum);Serial.print(":");Serial.println(position);
+}
+
+void transactServos() {
+  deferServoSet = 1;
+}
+
+void commitServos() {
+  checkForCrashingHips();
+  deferServoSet = 0;
+  for (int servo = 0; servo < 12; servo++) {
+    setServo(servo, ServoPos[servo]);
+  }
 }
 
 // checkForCrashingHips takes a look at the leg angles and tries to figure out if the commanded
@@ -1467,9 +1497,6 @@ void setServo(int servonum, int position) {
 // draw much power (the current draw is proportional to how far off the mark the servo is).
 
 void checkForCrashingHips() {
-
-  // for now turn this feature off
-  return;
   
   for (int leg = 0; leg < NUM_LEGS; leg++) {
     if (ServoPos[leg] > 85) {
@@ -1483,9 +1510,24 @@ void checkForCrashingHips() {
     }
     int diff = ServoPos[nextleg] - ServoPos[leg];
     // There's a fairly linear relationship
-    if (diff < 85) {
+    if (diff <= 85) {
+      // if the difference between the two leg positions is less than about 85 then there
+      // is not going to be a crash (or maybe just a slight touch that won't really cause issues)
       continue;
     }
+    // if we get here then the legs are touching, we will adjust them so that the difference is less than 85
+    int adjust = (diff-85)/2 + 1;  // each leg will get adjusted half the amount needed to avoid the crash
+    
+    // to debug crash detection, make the following line #if 1, else make it #if 0
+#if 1
+    Serial.print("#CRASH:");
+    Serial.print(leg);Serial.print("="); Serial.print(ServoPos[leg]);
+    Serial.print("/");Serial.print(nextleg);Serial.print("="); Serial.print(ServoPos[nextleg]);
+    Serial.print(" Diff="); Serial.print(diff); Serial.print(" ADJ="); Serial.println(adjust);
+#endif
+
+    setServo(leg, ServoPos[leg] + adjust);   
+    setServo(nextleg, ServoPos[nextleg] - adjust);
 
   }
 }
@@ -1555,6 +1597,9 @@ sendSensorData() {
   
   checksum = (checksum%256);
   BlueTooth.write(checksum); // end with checksum of data and length   
+  //Serial.println("Sens");
+
+  startedStanding = millis(); // sensor commands are coming from scratch so suppress sleep mode if this comes in
 
 }
 
@@ -1840,18 +1885,18 @@ void processPacketData() {
         // the 16 bytes of movement data is either a number from 1 to 180 meaning a position, or the
         // number 255 meaning "no move, stay at prior value", or 254 meaning "cut power to servo"
         if (i <= packetLengthReceived - 18) {
-            Serial.println("Got Raw Servo with enough bytes left");
+            //Serial.println("Got Raw Servo with enough bytes left");
             int movetype = packetData[i+1];
-            Serial.print(" Movetype="); Serial.println(movetype);
+            //Serial.print(" Movetype="); Serial.println(movetype);
             for (int servo = 0; servo < 16; servo++) {
               int pos = packetData[i+2+servo];
               if (pos == RAWSERVONOMOVE) {
-                Serial.print("Port "); Serial.print(servo); Serial.println(" NOMOVE");
+                //Serial.print("Port "); Serial.print(servo); Serial.println(" NOMOVE");
                 continue;
               }
               if (pos == RAWSERVODETACH) {
                     servoDriver.setPin(servo,0,false); // stop pulses which will quickly detach the servo
-                    Serial.print("Port "); Serial.print(servo); Serial.println(" detached");
+                    //Serial.print("Port "); Serial.print(servo); Serial.println(" detached");
                     continue;
               }
               if (movetype == RAWSERVOADD) {
@@ -1860,8 +1905,12 @@ void processPacketData() {
                 pos = ServoPos[servo] - pos;
               }
               pos = constrain(pos,0,180);
-              Serial.print("Servo "); Serial.print(servo); Serial.print(" pos "); Serial.println(pos);
-              setServo(servo, pos);
+              //Serial.print("Servo "); Serial.print(servo); Serial.print(" pos "); Serial.println(pos);
+              ServoPos[servo] = pos;
+            }
+            checkForCrashingHips();  // make sure the user didn't do something silly
+            for (int servo = 0; servo < 12; servo++) {
+               setServo(servo, ServoPos[servo]);               
             }
             i += 18; // length of raw servo move is 18 bytes
             mode = MODE_LEG;  // suppress auto-repeat of gamepad commands when this is in progress
@@ -2049,7 +2098,8 @@ void processPacketData() {
                   position = 180;
                  }
                  if (position < 254) {
-                  setServo(servo, position);
+                  ServoPos[servo] = position;
+
                   //Serial.print("POSE:servo="); Serial.print(servo); Serial.print(":pos="); Serial.println(position);
                  } else if (position == 254) {
                     // power down this servo
@@ -2059,6 +2109,11 @@ void processPacketData() {
                     //Serial.print("POSE:servo="); Serial.print(servo); Serial.println(":pos=unchanged");
                  }
               }
+              checkForCrashingHips();
+              for (int servo = 0; servo < 12; servo++) {
+                 setServo(servo, ServoPos[servo]);               
+              }
+
               mode = MODE_LEG;   // this stops auto-repeat of gamepad mode commands
              
               i += 13;  // length of pose command
@@ -2090,7 +2145,7 @@ void processPacketData() {
         break;
       default:
           Serial.print("PKERR:BadSW:"); Serial.print(packetData[i]); 
-          Serial.print("i=");Serial.print(i);Serial.print("RCD="); Serial.println(packetLengthReceived);
+          Serial.print("i=");Serial.print(i);Serial.print(" RCV="); Serial.println(packetLengthReceived);
           beep(BF_ERROR, BD_MED);
           return;  // something is wrong, so toss the rest of the packet
     }
@@ -2146,6 +2201,7 @@ unsigned long SuppressModesUntil = 0;
 void loop() {
 
   checkForServoSleep();
+  checkForCrashingHips();
   
   ////////////////////
   int p = analogRead(A0);
@@ -2268,7 +2324,7 @@ void loop() {
           lastCmd = -1;  // for safety put it in stop mode
         }
         long losstime = millis() - LastValidReceiveTime;
-        Serial.print("LOS"); Serial.println(losstime);
+        Serial.print("LOS "); Serial.println(losstime);
         return;  // don't repeat commands if we haven't seen valid data in a while
       }
 
@@ -2304,6 +2360,13 @@ void loop() {
     //
     // Now we're either repeating the last command, or reading the new bluetooth command
     //
+
+    ScamperTracker -= 1;
+    if (ScamperTracker < 0) {
+      ScamperTracker = 0;
+    } else {
+      Serial.println(ScamperTracker);
+    }
     
     switch(lastCmd) {
       case '?': //BlueTooth.println("Vorpal Hexapod"); 

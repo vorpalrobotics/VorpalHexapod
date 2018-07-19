@@ -1,6 +1,6 @@
 // Copyright (C) 2017 Vorpal Robotics, LLC.
 
-const char *Version = "#V1r8k";
+const char *Version = "#GV2r0";
 
 // This is the code that runs on the robot in the Vorpal The Hexapod project.
 
@@ -150,8 +150,8 @@ SoftwareSerial BlueTooth(A5,A4);  // connect bluetooth module Tx=A5=Yellow wire 
 #define MATRIX_NCOL 4
 
 unsigned long suppressButtonsUntil = 0;      // default is not to suppress until we see serial data
-File SDGamepadRecordFile;           // REC.txt, holds the gamepad record/play file
-const char SDGamepadRecordFileName[] = "REC.txt";   // never changes
+File SDGamepadRecordFile;           // REC, holds the gamepad record/play file
+const char SDGamepadRecordFileName[] = "REC";   // never changes
 char SDScratchRecordFileName[4];    // three letters like W1f for walk mode 1 forward dpad, plus one more for end of string '\0'
 File SDScratchRecordFile;
 
@@ -331,18 +331,17 @@ char decode_button(int b) {
 #define SREC_PLAYING    2
 
 // States for the Gamepad record/play function
-#define REC_STOPPED     0
-#define REC_RECORDING   1
-#define REC_PLAYING     2
-#define REC_PAUSED      3
-#define REC_REWINDING   4
-#define REC_ERASING     5
+#define GREC_STOPPED     0
+#define GREC_RECORDING   1
+#define GREC_PLAYING     2
+#define GREC_PAUSED      3
+#define GREC_REWINDING   4
+#define GREC_ERASING     5
 
 #define REC_MAXLEN (40000)      // we will arbitrarily limit recording time to about 1 hour (forty thousand deci-seconds)
 #define REC_FRAMEMILLIS 100     // time between data frames when recording/playing
-#define REC_FRAMESIZE 13        // number of bytes in a frame
 
-int GRecState = REC_STOPPED;  // gamepad recording state
+int GRecState = GREC_STOPPED;  // gamepad recording state
 int SRecState = SREC_STOPPED; // scratch recording state
 unsigned long GRecNextEventTime = 0; // next time to record or play a gamepad record/play event 
 unsigned long SRecNextEventTime = 0; // next time to play a scratch recording event
@@ -436,7 +435,9 @@ void removeAllRecordFiles() {
 int sendbeep(int noheader) {
 
 #if DEBUG_SD
-     Serial.print("#BTBEEP="); Serial.print("B+"); Serial.print(BeepFreq); Serial.print("+"); Serial.println(BeepDur);
+      if (BeepFreq != 0) {
+        Serial.print("#BTBEEP="); Serial.print("B+"); Serial.print(BeepFreq); Serial.print("+"); Serial.println(BeepDur);
+      }
 #endif
 
     unsigned int beepfreqhigh = highByte(BeepFreq);
@@ -476,16 +477,16 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
               return;
             }
             Serial.println("#LOOP");
-          } else {
-            if (GRecState == REC_PLAYING) {
-              GRecState = REC_STOPPED;
+          } else { // not looping, stop playing
+            if (GRecState == GREC_PLAYING) {
+              GRecState = GREC_STOPPED;
               SDGamepadRecordFile.close();
             }
             if (SRecState == SREC_PLAYING) {
               SRecState = SREC_STOPPED;
               SDScratchRecordFile.close();
             }
-            file.close();
+            file.close(); // it's ok to close the file twice
             return;
           }
         }
@@ -493,10 +494,13 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
 
         // one complication: if we're playing a scratch recording off a long click button, and also
         // we're in gamepad record mode, then we need to save the current scratch playing records to the gamepad record file
-        if (SRecState == SREC_PLAYING && GRecState == REC_RECORDING) {
+        if (SRecState == SREC_PLAYING && GRecState == GREC_RECORDING) {
           // in this case we know the file we're reading from must be a scratch recording that's now playing
-          // so write it's length into the gamepad recording file.
-          SDGamepadRecordFile.write(length);
+          // so write its length into the gamepad recording file.
+          //SDGamepadRecordFile.write(length);
+#if DEBUG_SD
+          Serial.print("#SC>GR L="); Serial.println(length);
+#endif
         }
         BlueTooth.print("V1");
         BlueTooth.write(length+5);  // include 5 more bytes for beep
@@ -509,13 +513,13 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
               int c = file.read();
               checksum += c;
               BlueTooth.write(c);
-              if (SRecState == SREC_PLAYING && GRecState == REC_RECORDING) {
+              if (SRecState == SREC_PLAYING && GRecState == GREC_RECORDING) {
                 // in this case we know the file we're reading from must be a scratch recording that's now playing
-                // and we're also recording from the gamepad record feature, so we need to write this byte into the gamepad
+                // and we're also recording using the gamepad record feature, so we need to write this byte into the gamepad
                 // recording file
-                SDGamepadRecordFile.write(c);
+                //SDGamepadRecordFile.write(c);
 #if DEBUG_SD
-                Serial.print("#SC->GP@");  Serial.println(SDGamepadRecordFile.position()); // scratch data written to gamepad recording file
+                Serial.print("#SC>GR@");  Serial.print(SDScratchRecordFile.position()); Serial.print(":"); Serial.println(SDGamepadRecordFile.position()); // scratch data written to gamepad recording file
 #endif
               }
 #if DEBUG_SD
@@ -551,7 +555,7 @@ void RecordPlayHandler() {
      }
 
      if (millis() > NextTransmitTime) {
-          NextTransmitTime = millis() + 100;
+          NextTransmitTime = millis() + REC_FRAMEMILLIS;
           SendNextRecordedFrame(SDScratchRecordFile, SDScratchRecordFileName, 1); // always loop scratch recordings
      }
 
@@ -560,15 +564,16 @@ void RecordPlayHandler() {
   }
 
   // If we get here, then Scratch was not recording or playing anything
-  // The code below handles the gamepad manual recording functions
+  // The code below handles the gamepad manual recording functions triggered from the "R" line of buttons
   
   switch (GRecState) {
-    case REC_STOPPED:
+    case GREC_STOPPED:
       // make sure file is closed and flushed
-      SDGamepadRecordFile.close();
+      SDGamepadRecordFile.close();  // it's ok to call this even if its already closed, I checked the SD card code
       break;
       
-    case REC_PAUSED:
+    /////////////////////////////////////////////////////////////  
+    case GREC_PAUSED:
       // nothing to do!
 #if DEBUG_SD
       Serial.println("#PS");
@@ -576,11 +581,11 @@ void RecordPlayHandler() {
       break;
 
     ////////////////////////////////////////////////////////////
-    case REC_PLAYING: {
+    case GREC_PLAYING: {
         if (!SDGamepadRecordFile) {
           // We don't seem to have an opened file, something is wrong
           Serial.println("#SDNOP"); // "SD Not Open"
-          GRecState = REC_STOPPED;
+          GRecState = GREC_STOPPED;
           return;
         }
         // chirp once every second to remind user they are playing a recording
@@ -605,10 +610,10 @@ void RecordPlayHandler() {
       break;
 
     /////////////////////////////////////////////////////////
-    case REC_RECORDING:
+    case GREC_RECORDING:
       if (!SDGamepadRecordFile) {
           // something is hideously wrong
-          GRecState = REC_STOPPED;
+          GRecState = GREC_STOPPED;
           return;
       }
       // chirp once every second to remind user they are recording
@@ -640,9 +645,9 @@ void RecordPlayHandler() {
       break;
 
     ////////////////////////////////////////////////////////////
-    case REC_REWINDING:
+    case GREC_REWINDING:
       GRecNextEventTime = 0;
-      GRecState = REC_STOPPED;
+      GRecState = GREC_STOPPED;
       SDGamepadRecordFile.flush();  // it's safe to do all these operations without checking if the file is open
       SDGamepadRecordFile.seek(0);       
 
@@ -835,7 +840,7 @@ int handleSerialInput() {
           } else { // start recording
             Serial.println("#REC");
             SRecState = SREC_RECORDING; // scratch is officially recording all traffic going to the gamepad
-            GRecState = REC_STOPPED;  // if recording was previously happening from the gamepad this stops it
+            GRecState = GREC_STOPPED;  // if recording was previously happening from the gamepad this stops it
                                       // although this really shouldn't happen since the gamepad shouldn't be responding to both
                                       // buttons and scratch at the same time.
             // if we're already recording to the same file, and that file is indeed open, don't do anything
@@ -852,6 +857,11 @@ int handleSerialInput() {
             
             // If we get here, we're either not scratch recording, or recording to
             // the wrong file.
+
+            // if a file is open, close it
+            if (SDScratchRecordFile) {
+              SDScratchRecordFile.close();
+            }
             
             // erase any prior recording on this same button sequence
             removeScratchRecordFile(ScratchSDFileName[0], ScratchSDFileName[1], ScratchSDFileName[2]);
@@ -872,7 +882,7 @@ void send_trim(int matrix, int dpad) {
     int trim = dpad;
     
     if (matrix >= REC_RECORD) {
-      Serial.print("TRIM-MATRIX=");Serial.println(matrix);
+      //Serial.print("TRIM-MATRIX=");Serial.println(matrix);
       switch (matrix) {
         case REC_RECORD: 
           if (longClick == 2) {  // only do this on a very long click
@@ -915,7 +925,7 @@ void loop() {
 
   if (TrimMode) {
     // special mode where we just transmit the DPAD buttons or the buttons on the record line in a special way.
-    if (CurDpad != 's') { Serial.print("#TRIM:"); Serial.println(CurDpad); }
+    //if (CurDpad != 's') { Serial.print("#TRIM:"); Serial.println(CurDpad); }
     send_trim(matrix, CurDpad);
     delay(200);
     return;
@@ -962,7 +972,7 @@ void loop() {
     // we also want to forcibly stop gamepad record/play mode if scratch is talking to the gamepad
     // because that would result in weirdness. Like, what does that even mean? If you want to record
     // Scratch commands there's a clean scratch block feature for that.
-    GRecState = REC_STOPPED;
+    GRecState = GREC_STOPPED;
     SDGamepadRecordFile.close();
   }
 
@@ -980,17 +990,24 @@ void loop() {
       // we check to ensure nothing was previously pushed
       longClick = 0;
       if (priormatrix == -1) {
-        if (GRecState == REC_RECORDING) {
+        if (GRecState == GREC_RECORDING) {
           // if we were already recording, the record button causes a stop
-          GRecState = REC_STOPPED;
+          GRecState = GREC_STOPPED;
           setBeep(BF_NOTIFY, BD_MED);
-        } else { // GRecState was not REC_RECORDING so let's get set up to record
+        } else { // GRecState was not GREC_RECORDING so let's get set up to record
+
+          // right now we can't both record and be playing a longclick command at the
+          // same time.
+          if (SRecState == SREC_PLAYING || SRecState == SREC_RECORDING) {
+            SRecState = SREC_STOPPED;
+            SDScratchRecordFile.close();
+          }
           if (!SDGamepadRecordFile) {
             // if it wasn't already open, open it for writing at the end
             SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
           }
           if (SDGamepadRecordFile) {
-            GRecState = REC_RECORDING;
+            GRecState = GREC_RECORDING;
             setBeep(BF_NOTIFY, BD_MED);
 #if DEBUG_SD
             Serial.print("#OP:"); Serial.println(SDGamepadRecordFileName);
@@ -1007,27 +1024,27 @@ void loop() {
       longClick = 0;
       if (priormatrix == -1) {  // again, this button takes on different meanings so debounce
         PlayLoopMode = 0;
-        if (GRecState == REC_STOPPED) { // if the recording was stopped, interpret the button to mean "PLAY"
+        if (GRecState == GREC_STOPPED) { // if the recording was stopped, interpret the button to mean "PLAY"
           // if it wasn't already opened, open it
           if (!SDGamepadRecordFile) {
             SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
             SDGamepadRecordFile.seek(0);  // rewind to start of file
           }
           if (SDGamepadRecordFile) {
-            GRecState = REC_PLAYING;
+            GRecState = GREC_PLAYING;
             setBeep(BF_NOTIFY, BD_MED);
           } else {
             setBeep(BF_ERROR, BD_LONG);
           }
-        } else if (GRecState == REC_PLAYING) {
+        } else if (GRecState == GREC_PLAYING) {
           // if the state was already playing, the hitting the play button pauses the current playback
-          GRecState = REC_PAUSED;
+          GRecState = GREC_PAUSED;
           setBeep(BF_NOTIFY, BD_MED);
 #if DEBUG_SD
           debug("#PS"); debugln();
 #endif
         } else {
-          GRecState = REC_PLAYING;
+          GRecState = GREC_PLAYING;
           setBeep(BF_NOTIFY, BD_MED);
         }
       } else if (millis() - curmatrixstarttime > 1000) { // long tap
@@ -1038,7 +1055,7 @@ void loop() {
       break;
 
      case REC_REWIND:
-      GRecState = REC_REWINDING;
+      GRecState = GREC_REWINDING;
       setBeep(BF_REWIND, BD_MED);
       break;
 
@@ -1049,7 +1066,7 @@ void loop() {
       } else if (millis() - curmatrixstarttime > 2000) { // very long tap required to erase for safety
         SDGamepadRecordFile.close();
         SD.remove(SDGamepadRecordFileName);
-        GRecState = REC_STOPPED;
+        GRecState = GREC_STOPPED;
 #if DEBUG_SD
         Serial.println("#ERS");
 #endif       
@@ -1075,6 +1092,14 @@ void loop() {
   }
 
   if (longClick && (CurCmd == 'W' || CurCmd == 'D' || CurCmd == 'F')) {
+
+    // for now we won't allow scratch created longclick buttons to be recorded to the
+    // gamepad using the gamepad record function. This causes instability due to
+    // memory usage
+    if (GRecState == GREC_RECORDING || GRecState == GREC_PLAYING) {
+      GRecState = GREC_STOPPED;
+      SDGamepadRecordFile.close();
+    }
     // see if a special command is already in progress
     if (SRecState == SREC_PLAYING && 
         SDScratchRecordFileName[0] == CurCmd && 
@@ -1092,7 +1117,7 @@ void loop() {
           SDScratchRecordFile.close();
           SRecState = SREC_STOPPED;
 #if DEBUG_SD
-          Serial.print("#PL:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.print(CurDpad);Serial.println(SDScratchRecordFileName);
+          Serial.print("#PL:");Serial.print(CurCmd);Serial.print(CurSubCmd);Serial.print(CurDpad);Serial.print("/cur=");Serial.println(SDScratchRecordFileName);
 #endif
           // see if there exists a file for the current button sequence
           char cmdfile[4];
@@ -1114,11 +1139,21 @@ void loop() {
             SDScratchRecordFile.close();  // just in case it's open. it's ok to close it if it's not open
           }
         }
-  }  // END OF LONGCLICK HANDLER
+  } else { // END OF LONGCLICK HANDLER "IF"
+    // if we get here, there is no long click in progress so we should stop playing scratch files if
+    // they are playing
+    if (SRecState == SREC_PLAYING) {
+      SRecState = SREC_STOPPED;
+      SDScratchRecordFile.close();
+#if DEBUG_SD
+      Serial.println("#CLOSEPL");
+#endif
+    }
+  }
 
   RecordPlayHandler();  // handle the record/play mode
 
-  if (millis() > NextTransmitTime  && GRecState != REC_PLAYING && SRecState != SREC_PLAYING ) { // don't transmit joystick controls during replay mode!
+  if (millis() > NextTransmitTime  && GRecState != GREC_PLAYING && SRecState != SREC_PLAYING ) { // don't transmit joystick controls during replay mode!
 
     // Packet consists of:
     // Byte 0: The letter "V" is used as a header. (Vorpal)
@@ -1151,6 +1186,6 @@ void loop() {
     
     setBeep(0,0); // clear the current beep because it's been sent now
     
-    NextTransmitTime = millis() + 100;
+    NextTransmitTime = millis() + REC_FRAMEMILLIS;
   }
 }
