@@ -3,17 +3,24 @@
 //           Vorpal Combat Hexapod Control Program  Version: V1R8k
 //
 // Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
+//
+// See below all the license comments for new features in this version. (Search for NEW FEATURES)
 
-const char *Version = "#RV2r0";
+const char *Version = "#RV2r1";
 
-//////////// For more information:
+//////////// FOR MORE INFORMATION ///////////////////////////////////
 // Main website:                  http://www.vorpalrobotics.com
 // Store (for parts and kits):    http://store.vorpalrobotics.com
-// Wiki main entry for hexapod:   http://vorpalrobotics.com/wiki/index.php?title=Vorpal_The_Hexapod
-// Wiki entry, radio protocol:    http://vorpalrobotics.com/wiki/index.php/Vorpal_The_Hexapod_Radio_Protocol_Technical_Information
-// Wiki entry, other projects:    http://www.vorpalrobotics.com/wiki
+// VORPAL WIKI RELATED TECHNICAL LINKS
+// Main entry for hexapod:   http://vorpalrobotics.com/wiki/index.php?title=Vorpal_The_Hexapod
+// Radio protocol:           http://vorpalrobotics.com/wiki/index.php/Vorpal_The_Hexapod_Radio_Protocol_Technical_Information
+// Grip arm add-on:          http://vorpalrobotics.com/wiki/index.php?title=Vorpal_The_Hexapod_Grip_Arm
+// Downloading 3D files:     http://vorpalrobotics.com/wiki/index.php/Vorpal_Hexapod_Source_Files
+// Other Vorpal projects:    http://www.vorpalrobotics.com/wiki
+/////////////////////////////////////////////////////////////////////
 
-///////////  License:
+
+///////////  LICENSE:
 //
 // This work is licensed under the Creative Commons 
 // Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -81,6 +88,37 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 *******************************************************************************/
 /////////////////////////////////////////////////////////////////////////////////
 
+////////////// NEW IN THIS RELEASE /////////////////////
+// This release has two major new items:
+// 1) Grip Arm support. When the robot dial is set to a position between DEMO and RC this code replaces
+//    F2 fight mode with grip arm controls. Forward and Backward DPAD buttons raise and lower
+//    the grip arm. Left opens and right closes the claw. The grip arm kit is open source, see
+//    the list of links near the top of this file for more information.
+//
+// 2) Safe Legs. The old code allowed gamepad users to rapidly switch between any two motions
+//    and some combinations of switches would super stress the servos. We believe this was a
+//    major cause of servo wear. For example, if you switched from D1 LEFT (three legs up dancing)
+//    to D1 RIGHT (the other three legs up) then depending on timing, you could slam the robot to
+//    the ground and then it would attempt to rise up using only 3 legs. It really takes at least 4
+//    legs to get the robot off the ground but preferably when rising up from the ground you should
+//    try to use all six to keep the servos happy. So this really stresses the three servos trying to lift
+//    the robot. Often the robot would only partially rise in this situation, causing the three servos
+//    on the ground to stall and they would rapidly overheat if the user keeps the robot like this
+//    for any length of time. This kind of thing can also happen with certain combinations of D4 (Mr. Hands
+//    Mode) and F1 or F2 (fight mode in which two legs are off the ground.
+//    We noticed that in public demos, little kids would do things like this all the time, and usually by
+//    the end of the day we'd have a dead servo on half the demo robots, or more if it was a really rough crowd.
+//    Anway, to make a long story longer, this release attempts to detect this situation and inserts a short (0.2 second)
+//    extra move where all six legs go to the ground, followed by the requested action.
+//    The method employed is a bit crude, we just keep a flag SomeLegsUp that is set to 1 whenever a requested move
+//    would have less than all the legs on the ground. If a new requested move also would not have all legs on the ground
+//    then a short intermediate move is inserted to get the robot up using all the legs. 
+//    There's a better way that we will pursue in a future
+//    release which involves keeping a model of how many legs are on the ground and detecting situations where the
+//    intermediate move is needed. This other method is harder to implement but has the advantage that it would
+//    detect and correct even Scratch programs that would overstress the servos. The method implemented in this release
+//    will not be able to correct for an errant scratch program that triggers this situation.
+
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <SoftwareSerial.h>
@@ -88,27 +126,32 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <Pixy.h>
 #include <EEPROM.h>
 
-
 int FreqMult = 1;   // PWM frequency multiplier, use 1 for analog servos and up to about 3 for digital.
                     // The recommended setting for digital is 2 (probably safe for all digital servos)
                     // A shunt between Nano D5 and D6 will set this to "1" in setup, this allows you
                     // to select digital servo mode (2) or analog servo mode (1) using a shunt 
                     // or short jumper wire.
+                    
+byte SomeLegsUp = 0;  // this is a flag to detect situations where a user rapidly switches moves that would
+                      // cause the robot to try to come up off the ground using fewer than all the legs 
+                      //(and thus over-stressing the servos).
 
 // NOTE: For digital servos such as Genuine Tower Pro MG90S or Turnigy MG90S we recommend putting
-// a small O-ring or rubber washer on the hip servo shaft before putting the servo horn on. This will reduce or eliminate
+// a smal rubber washer on the hip servo shaft before putting the servo horn on. This will reduce or eliminate
 // "hunting" behavior which can cause the servo to rapidly oscillate around the target position. Adjusting
 // the servo horn screw tightness to be just tight enough to stop any hunting is recommended.
 // This is not needed for analog servos and it is not needed for the Vorpal MG90 branded servos.
 
-Pixy CmuCam5; // cmu cam 5 support as an SPI device
+//Pixy CmuCam5; // cmu cam 5 support as an SPI device, this is currently experimental
 
-#define SERVO_IIC_ADDR  (0x40)
+#define SERVO_IIC_ADDR  (0x40)    // default servo driver IIC address
 Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR); 
 
 #define BeeperPin 4           // digital 4 used for beeper
 #define ServoTypePin 5        // 5 is used to signal digital vs. analog servo mode
 #define ServoTypeGroundPin 6  // 6 provides a ground to pull 5 low if digital servos are in use
+#define GripElbowCurrentPin A6  // current sensor for grip arm elbow servo, only used if GRIPARM mode
+#define GripClawCurrentPin  A7  // current sensor for grip claw servo, only used if GRIPARM mode
 #define BF_ERROR  100         // deep beep for error situations
 #define BD_MED    50          // medium long beep duration
 
@@ -227,11 +270,44 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 
 #define BATTERYSAVER 5000   // milliseconds in stand mode before servos all detach to save power and heat buildup
 
-short ServoPos[2*NUM_LEGS];
-byte ServoTrim[2*NUM_LEGS];  // trim values for fine adjustments to servo horn positions
+// Definitions for the Grip Arm optional attachment
+
+#define GRIPARM_ELBOW_SERVO 12
+#define GRIPARM_CLAW_SERVO  13
+#define GRIPARM_ELBOW_DEFAULT 90
+#define GRIPARM_CLAW_DEFAULT 90
+#define GRIPARM_ELBOW_MIN 30
+#define GRIPARM_ELBOW_MAX 180
+#define GRIPARM_CLAW_MIN 30
+#define GRIPARM_CLAW_MAX 120
+#define GRIPARM_CURRENT_DANGER (980)
+
+#define GRIPARM_ELBOW_NEUTRAL 90
+#define GRIPARM_CLAW_NEUTRAL 90
+
+int GripArmElbowTarget=90, GripArmClawTarget=90;
+
+// Definitions for the servos
+
+#define MAX_GRIPSERVOS 2
+
+short ServoPos[2*NUM_LEGS+MAX_GRIPSERVOS]; // the last commanded position of each servo
+long ServoTime[2*NUM_LEGS+MAX_GRIPSERVOS]; // the time that each servo was last commanded to a new position
+byte ServoTrim[2*NUM_LEGS+MAX_GRIPSERVOS];  // trim values for fine adjustments to servo horn positions
 long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
 long LastReceiveTime = 0;   // last time we got a bluetooth packet
 unsigned long LastValidReceiveTime = 0;  // last time we got a completely valid packet including correct checksum
+
+#define DIALMODE_STAND 0
+#define DIALMODE_ADJUST 1
+#define DIALMODE_TEST 2
+#define DIALMODE_DEMO 3
+#define DIALMODE_RC_GRIPARM 4
+#define DIALMODE_RC 5
+
+int Dialmode;   // What's the robot potentiometer set to?
+
+#define NUM_GRIPSERVOS ((Dialmode == DIALMODE_RC_GRIPARM)?2:0)  // if we're in griparm mode there are 2 griparm servos, else there are none
 
 void beep(int f, int t) {
   if (f > 0 && t > 0) {
@@ -366,6 +442,11 @@ void setKnee(int leg, int pos) {
   setServo(leg, pos);
 }
 
+void setGrip(int elbow, int claw) {
+    setServo(GRIPARM_ELBOW_SERVO, elbow);
+    setServo(GRIPARM_CLAW_SERVO, claw);
+}
+
 void turn(int ccw, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod) {
   turn(ccw, hipforward, hipbackward, kneeup, kneedown, timeperiod, 0);
 }
@@ -425,12 +506,18 @@ void turn(int ccw, int hipforward, int hipbackward, int kneeup, int kneedown, lo
   
 }
 
+
 void stand() {
-  setLeg(ALL_LEGS, HIP_NEUTRAL, KNEE_STAND, 0);
+  transactServos();
+    setLeg(ALL_LEGS, HIP_NEUTRAL, KNEE_STAND, 0);
+  commitServos();
 }
 
 void stand_90_degrees() {  // used to install servos, sets all servos to 90 degrees
+  transactServos();
   setLeg(ALL_LEGS, 90, 90, 0);
+  setGrip(90,90);
+  commitServos();
 }
 
 void laydown() {
@@ -527,8 +614,6 @@ void wave(int dpad) {
   }
 }
 
-#if 1
-
 void gait_sidestep(int left, long timeperiod) {
 
   // the gait consists of 6 phases and uses tripod definitions
@@ -592,7 +677,79 @@ void gait_sidestep(int left, long timeperiod) {
   commitServos();
 }
 
-#endif
+int GripArmElbowDestination = 90;
+short GripArmElbowIncrement = 0;
+
+void griparm_mode(char dpad) {
+    // this mode retains state and moves slowly
+
+    //Serial.print("Grip:"); Serial.print(dpad); 
+
+    Serial.println();
+      switch (dpad) {
+      case 's': 
+        // do nothing in stop mode, just hold current position
+        GripArmElbowTarget = ServoPos[GRIPARM_ELBOW_SERVO];
+        GripArmClawTarget = ServoPos[GRIPARM_CLAW_SERVO];
+        break;
+      case 'w':  // reset to standard grip arm position, arm raised to mid-level and grip open a medium amount
+        GripArmElbowTarget = GRIPARM_ELBOW_DEFAULT;
+        GripArmClawTarget = GRIPARM_CLAW_DEFAULT;
+        break;
+      case 'f': // Elbow up
+        GripArmElbowTarget = GRIPARM_ELBOW_MIN;
+        break;
+      case 'b': // Elbow down
+        GripArmElbowTarget = GRIPARM_ELBOW_MAX;
+        break;
+      case 'l':  // Claw closed
+        GripArmClawTarget = GRIPARM_CLAW_MAX;
+        break;
+      case 'r': // Claw open
+        GripArmClawTarget = GRIPARM_CLAW_MIN;
+        break;
+    }
+
+    // Now that all the targets are adjusted, move the servos toward their targets, slowly
+
+#define GRIPMOVEINCREMENT 10  // degrees per transmission time delay
+
+      int h, k;
+      h = ServoPos[GRIPARM_ELBOW_SERVO];
+      k = ServoPos[GRIPARM_CLAW_SERVO];
+      int diff = GripArmClawTarget - k;
+      
+      if (diff <= -GRIPMOVEINCREMENT) {
+        // the claw has a greater value than the target
+        k -= GRIPMOVEINCREMENT;
+      } else if (diff >= GRIPMOVEINCREMENT) {
+        // the claw has a smaller value than the target
+        k += GRIPMOVEINCREMENT;
+      } else {
+        // the claw is within MOVEINCREMENT of the target so just go to target
+        k = GripArmClawTarget;
+      }
+
+      setServo(GRIPARM_CLAW_SERVO, k);
+
+      diff = GripArmElbowTarget - h;
+
+      // smooth move mode on elbow
+      if (diff < -GRIPMOVEINCREMENT) {
+        // the elbow has a greater value than the target
+        h -= GRIPMOVEINCREMENT;
+      } else if (diff >= GRIPMOVEINCREMENT) {
+        // the elbow has a smaller value than the target
+        h += GRIPMOVEINCREMENT;
+      } else {
+        // the elbow is within MOVEINCREMENT of the target so just go to target
+        h = GripArmElbowTarget;
+      }
+      GripArmElbowDestination = h;
+      GripArmElbowIncrement = (h < ServoPos[GRIPARM_ELBOW_SERVO])?-2:2;
+      //Serial.print("GADest="); Serial.print(h); Serial.print(" GAinc="); Serial.println(GripArmElbowIncrement);
+    
+}
 
 unsigned short KneeTarget[NUM_LEGS];
 unsigned short HipTarget[NUM_LEGS];
@@ -600,6 +757,12 @@ unsigned short HipTarget[NUM_LEGS];
 void fight_mode(char dpad, int mode, long timeperiod) {
 
 #define HIP_FISTS_FORWARD 130
+
+  if (Dialmode == DIALMODE_RC_GRIPARM && mode == SUBMODE_2) {
+    // we're really not fighting, we're controlling the grip arm if GRIPARM is nonzero
+    griparm_mode(dpad);
+    return;
+  }
  
   if (mode == SUBMODE_3) {
     // in this mode the robot leans forward, left, or right by adjusting hips only
@@ -1344,7 +1507,7 @@ int ServosDetached = 0;
 
 void attach_all_servos() {
   Serial.print("ATTACH");
-  for (int i = 0; i < 12; i++) {
+  for (int i = 0; i < 2*NUM_LEGS+NUM_GRIPSERVOS; i++) {
     setServo(i, ServoPos[i]);
     Serial.print(ServoPos[i]); Serial.print(":");
   }
@@ -1442,6 +1605,7 @@ void setup() {
   delay(250);
   
   stand();
+  setGrip(90, 90);  // neutral grip arm (if installed)
   
   delay(300);
   
@@ -1458,11 +1622,14 @@ void setup() {
 byte deferServoSet = 0;
 
 void setServo(int servonum, int position) {
+  if (position != ServoPos[servonum]) {
+    ServoTime[servonum] = millis();
+  }
   ServoPos[servonum] = position;  // keep data on where the servo was last commanded to go
   
   int p = map(position,0,180,SERVOMIN,SERVOMAX);
   
-  if (TrimInEffect) {
+  if (TrimInEffect && servonum < 12) {
     //Serial.print("Trim leg "); Serial.print(servonum); Serial.print(" "); Serial.println(ServoTrim[servonum] - TRIM_ZERO);
     p += ServoTrim[servonum] - TRIM_ZERO;   // adjust microseconds by trim value which is renormalized to the range -127 to 128    
   }
@@ -1483,7 +1650,7 @@ void transactServos() {
 void commitServos() {
   checkForCrashingHips();
   deferServoSet = 0;
-  for (int servo = 0; servo < 12; servo++) {
+  for (int servo = 0; servo < 2*NUM_LEGS+NUM_GRIPSERVOS; servo++) {
     setServo(servo, ServoPos[servo]);
   }
 }
@@ -2153,10 +2320,10 @@ void processPacketData() {
 }
 
 
-
 int flash(unsigned long t) {
   // the following code will return HIGH for t milliseconds
-  // followed by LOW for t milliseconds.
+  // followed by LOW for t milliseconds. Useful for flashing
+  // the LED on pin 13 without blocking
   return (millis()%(2*t)) > t;
 }
 
@@ -2189,9 +2356,88 @@ void checkForServoSleep() {
       // wake it up!
       resetServoDriver();
       beep(1200,100);  // chirp to warn user of brown out on servo controller
-      SuppressScamperUntil = millis() + 10000;  // no scamper for 10 seconds if we ran out of power
+      SuppressScamperUntil = millis() + 10000;  // no scamper for you! (for 10 seconds because we ran out of power, give the battery
+                                                // a bit of time for charge migration and let the servos cool down)
     }
     freqWatchDog = millis() + 100;
+  }
+}
+
+void checkLegStressSituation() {
+      return; // This is experimental and for now we're disabling it by immediately returning
+
+#if 0
+      
+      // ok we got new data. Awesome! If it's not the same mode as the old data and would result in the robot
+      // attempting to lift off the ground with less than all six legs, then insert a 200 millisecond
+      // attempt to get the robot lifted back off the ground. For now we're just hard coding the
+      // major cases that would cause this in practice. A better solution would be to have a watchdog
+      // that models the robot's ground-to-standing state at a low level in the servo subroutines.
+      // We will do that in a future release, but for now this will save a lot of stress on the servos and
+      // is easy.
+
+      // first, let's see if all six legs are plausibly on the ground which we'll define as the hips all
+      // having been commanded to a standing angle at least 200 milliseconds ago
+      long now = millis();
+      byte alldown = 1;
+      for (int i = 0; i < NUM_LEGS; i++) {
+        if ( (ServoTime[i+KNEE_OFFSET] <= now - 200) && ServoPos[i+KNEE_OFFSET] <= KNEE_STAND) {
+          continue;  // this leg meets the criteria
+        }
+        // if we get here we found a leg that's possibly not all the way down
+        alldown = 0;
+        break;
+      }
+      if (alldown) {
+        return;   // no need to continue, all the legs are down
+      }
+
+      // ok, we're in a dangerous situation. Not every leg is down and we're switching to a new mode.
+      // for safety, if the new mode doesn't have all the legs down, we're going to insert a short
+      // extra move to bring the legs all down to the ground.
+      // the modes that don't have all legs down are: W2*, F1*, F2* if not with GRIPARM, D1l, D1r, D3*, D4*
+      // while technically some walking modes may not have all the legs down at certain times, only W2 (high step)
+      // would have the legs so far off the ground that it would be a major issue.
+
+      if (
+            (mode == 'W' && submode == '2' && lastCmd != 's') ||
+            (mode == 'F' && (submode == '1' || (submode == '2' && Dialmode != DIALMODE_RC_GRIPARM) )) ||
+            (mode == 'D' && (submode == '3' || submode == '4')) ||
+            (mode == 'D' && submode == '1' && (lastCmd == 'r' || lastCmd == 'l'))
+          ) {
+            // if we get here, we do in fact have a danger situation so command all the hips down
+            // to a standing position momentarily
+            stand();
+            delay(200);
+          }
+
+#endif
+}
+
+void checkForSmoothMoves() {
+  // This is kind of a hack right now for making the grip arm move smoothly. Really there should be a
+  // general mechanism that would apply to all servos for things like lean and twist mode as well as
+  // servos added by the user for use by Scratch. We'll kind of use this hack as a prototype for a
+  // more general mechanism to be implemented in a major revision later
+
+  if (abs(ServoPos[GRIPARM_ELBOW_SERVO] - GripArmElbowDestination) <= 1) { 
+    // uncomment the following line to debug grip elbow movement
+    //Serial.print("GA close pos="); Serial.print(ServoPos[GRIPARM_ELBOW_SERVO]); Serial.print(" dest="); Serial.println(GripArmElbowDestination);
+    return; // we're close enough to the intended destination already
+  }
+  
+  #define SMOOTHINCREMENTTIME 20    // number of milliseconds between interpolated moves
+  static long LastSmoothMoveTime = 0;
+
+  long now = millis();
+  if (now >= LastSmoothMoveTime + SMOOTHINCREMENTTIME) {
+    LastSmoothMoveTime = now;
+    //Serial.print("Set GAE="); Serial.println(ServoPos[GRIPARM_ELBOW_SERVO]+GripArmElbowIncrement);
+    deferServoSet = 0;
+    setServo(GRIPARM_ELBOW_SERVO, ServoPos[GRIPARM_ELBOW_SERVO]+GripArmElbowIncrement);
+    
+  } else {
+    //Serial.println("not time");
   }
 }
 
@@ -2202,36 +2448,31 @@ void loop() {
 
   checkForServoSleep();
   checkForCrashingHips();
+  checkForSmoothMoves();
   
   ////////////////////
   int p = analogRead(A0);
   int factor = 1;
-
-#define MODE_STAND 0
-#define MODE_ADJUST 1
-#define MODE_TEST 2
-#define MODE_DEMO 3
-#define MODE_RC 4
-
-  int dialmode;
   
   if (p < 50) {
-    dialmode = MODE_STAND;
+    Dialmode = DIALMODE_STAND;
   } else if (p < 150) {
-    dialmode = MODE_ADJUST;
+    Dialmode = DIALMODE_ADJUST;
   } else if (p < 300) {
-    dialmode = MODE_TEST;
+    Dialmode = DIALMODE_TEST;
   } else if (p < 750) {
-    dialmode = MODE_DEMO;
+    Dialmode = DIALMODE_DEMO;
+  } else if (p < 950) {
+    Dialmode = DIALMODE_RC_GRIPARM;
   } else {
-    dialmode = MODE_RC;
+    Dialmode = DIALMODE_RC;
   }
 
-  if (dialmode != priorDialMode && priorDialMode != -1) {
-    beep(100+100*dialmode,60);   // audio feedback that a new mode has been entered
+  if (Dialmode != priorDialMode && priorDialMode != -1) {
+    beep(100+100*Dialmode,60);   // audio feedback that a new mode has been entered
     SuppressModesUntil = millis() + 1000;
   }
-  priorDialMode = dialmode;
+  priorDialMode = Dialmode;
 
   if (millis() < SuppressModesUntil) {
     return;
@@ -2239,12 +2480,13 @@ void loop() {
   
   //Serial.print("Analog0="); Serial.println(p);
   
-  if (dialmode == MODE_STAND) { // STAND STILL MODE
+  if (Dialmode == DIALMODE_STAND) { // STAND STILL MODE
     
     digitalWrite(13, LOW);  // turn off LED13 in stand mode
     //resetServoDriver();
     delay(250);
     stand();
+    setGrip(90,90);   // in stand mode set the grip arms to neutral positions
     // in Stand mode we will also dump out all sensor values once per second to aid in debugging hardware issues
     if (millis() > ReportTime) {
           ReportTime = millis() + 1000;
@@ -2256,7 +2498,7 @@ void loop() {
           Serial.println("");
     }
 
-  } else if (dialmode == MODE_ADJUST) {  // Servo adjust mode, put all servos at 90 degrees
+  } else if (Dialmode == DIALMODE_ADJUST) {  // Servo adjust mode, put all servos at 90 degrees
     
     digitalWrite(13, flash(100));  // Flash LED13 rapidly in adjust mode
     stand_90_degrees();
@@ -2266,10 +2508,10 @@ void loop() {
           Serial.println("AdjustMode");
     }
     
-  } else if (dialmode == MODE_TEST) {   // Test each servo one by one
+  } else if (Dialmode == DIALMODE_TEST) {   // Test each servo one by one
     pinMode(13, flash(500));      // flash LED13 moderately fast in servo test mode
     
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 2*NUM_LEGS+NUM_GRIPSERVOS; i++) {
       p = analogRead(A0);
       if (p > 300 || p < 150) {
         break;
@@ -2286,7 +2528,7 @@ void loop() {
       Serial.print("SERVO: "); Serial.println(i);
     }
     
-  } else if (dialmode == MODE_DEMO) {  // demo mode
+  } else if (Dialmode == DIALMODE_DEMO) {  // demo mode
 
     digitalWrite(13, flash(2000));  // flash LED13 very slowly in demo mode
     random_gait(timingfactor);
@@ -2296,7 +2538,7 @@ void loop() {
     }
     return;
 
-  } else { // bluetooth mode
+  } else { // bluetooth mode (regardless of whether it's with or without the grip arm)
 
     digitalWrite(13, HIGH);   // LED13 is set to steady on in bluetooth mode
     if (millis() > ReportTime) {
@@ -2324,7 +2566,7 @@ void loop() {
           lastCmd = -1;  // for safety put it in stop mode
         }
         long losstime = millis() - LastValidReceiveTime;
-        Serial.print("LOS "); Serial.println(losstime);
+        Serial.print("LOS "); Serial.println(losstime);  // LOS stands for "Loss of Signal"
         return;  // don't repeat commands if we haven't seen valid data in a while
       }
 
@@ -2332,12 +2574,12 @@ void loop() {
       // we didn't receive any new instructions so repeat the last command unless it was binary
       // or unless we're in fight adjust mode
       if (lastCmd == -1) {
-        Serial.println("REP");
+        //Serial.println("REP");
         return;
       }
 
 
-      // fight submodes C and E should not be repeated without receiving
+      // fight submodes 3 and 4 should not be repeated without receiving
       // a packet because otherwise they'll zoom right to the end state instead
       // of giving the user a chance to make fine adjustments to position
       if (mode == MODE_FIGHT && (submode == SUBMODE_3 || submode == SUBMODE_4)) {
@@ -2345,8 +2587,18 @@ void loop() {
         return;
       }
 
+      // If the griparm in enabled then fight mode 2 really is grip control mode and
+      // this mode is incremental in nature so the user can adjust the grip up/down/open/closed
+      // bit by bit
+      if (Dialmode == DIALMODE_RC_GRIPARM && mode == MODE_FIGHT && (submode == SUBMODE_2)) {
+        return;
+      }
+
     } else {
       LastReceiveTime = millis();
+
+      checkLegStressSituation();
+      
     }
     // Leg set mode should also not be repeated
     if (mode == MODE_LEG) {
@@ -2354,7 +2606,8 @@ void loop() {
       return;
     } else if (mode == MODE_GAIT) {
         // repeat the last Gait command (from scratch typically)
-        gait_command(LastGgaittype, LastGreverse, LastGhipforward, LastGhipbackward, LastGkneeup, LastGkneedown, LastGleanangle, LastGtimeperiod);
+        gait_command(LastGgaittype, LastGreverse, LastGhipforward, LastGhipbackward, 
+                LastGkneeup, LastGkneedown, LastGleanangle, LastGtimeperiod);
         return;
     }
     //
@@ -2365,11 +2618,11 @@ void loop() {
     if (ScamperTracker < 0) {
       ScamperTracker = 0;
     } else {
-      Serial.println(ScamperTracker);
+      //Serial.println(ScamperTracker);
     }
     
     switch(lastCmd) {
-      case '?': //BlueTooth.println("Vorpal Hexapod"); 
+      case '?': BlueTooth.println("#Vorpal Hexapod"); 
         break;
       case 'W': 
         mode = MODE_WALK; 

@@ -1,4 +1,4 @@
-// Copyright (C) 2017 Vorpal Robotics, LLC.
+ // Copyright (C) 2017 Vorpal Robotics, LLC.
 
 const char *Version = "#GV2r0";
 
