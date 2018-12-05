@@ -1,12 +1,12 @@
 
 ////////////////////////////////////////////////////////////////////////////////
-//           Vorpal Combat Hexapod Control Program  Version: V1R8k
+//           Vorpal Hexapod Control Program  
 //
 // Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
 //
 // See below all the license comments for new features in this version. (Search for NEW FEATURES)
 
-const char *Version = "#RV2r1";
+const char *Version = "#RV2r1a";
 
 //////////// FOR MORE INFORMATION ///////////////////////////////////
 // Main website:                  http://www.vorpalrobotics.com
@@ -95,7 +95,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //    the grip arm. Left opens and right closes the claw. The grip arm kit is open source, see
 //    the list of links near the top of this file for more information.
 //
-// 2) Safe Legs. The old code allowed gamepad users to rapidly switch between any two motions
+// 2) Safe Legs. [Currently disabled] The old code allowed gamepad users to rapidly switch between any two motions
 //    and some combinations of switches would super stress the servos. We believe this was a
 //    major cause of servo wear. For example, if you switched from D1 LEFT (three legs up dancing)
 //    to D1 RIGHT (the other three legs up) then depending on timing, you could slam the robot to
@@ -123,7 +123,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <Adafruit_PWMServoDriver.h>
 #include <SoftwareSerial.h>
 #include <SPI.h>
-#include <Pixy.h>
+//#include <Pixy.h>
 #include <EEPROM.h>
 
 int FreqMult = 1;   // PWM frequency multiplier, use 1 for analog servos and up to about 3 for digital.

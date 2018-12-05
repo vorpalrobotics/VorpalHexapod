@@ -1,6 +1,6 @@
- // Copyright (C) 2017 Vorpal Robotics, LLC.
+// Copyright (C) 2017 Vorpal Robotics, LLC.
 
-const char *Version = "#GV2r0";
+const char *Version = "#GV2r1";  // this version adds SD card formatting when booting while holding down R4
 
 // This is the code that runs on the robot in the Vorpal The Hexapod project.
 
@@ -21,15 +21,46 @@ const char *Version = "#GV2r0";
 
 
 //////////// Required IDE Version and libraries:
-// This program does not require any libraries that aren't already built-in to the Arduino IDE. It uses SPI, wire,
-// SD, and SoftwareSerial but they are all standard in the IDE so you won't need to load any new libraries.
-// This has been tested mainly using Arduino IDE version 1.8.5 and it may not work properly in earlier versions.
+// This program requires several built-in Arduino IDE libraries: SPI, wire, SoftwareSerial
+// This program also uses the SDFAT library created by Bill Greiman. See below for the MIT License for this library.
+// The function SDCardFormat() in this source file was also substancially derived from the SDFormatter example program
+// by Bill Greiman and is covered by the same license, reproduced below.
+//
+// All required libraries (the versions we tested with) are stored in the shared dropbox folder: http://tinyurl.com/VorpalFiles
+// This has been tested mainly using Arduino IDE version 1.8.5 and later, and it may not work properly in earlier versions.
 
 //////////// Processor notes:
 // The processor we use on the gamepad is the Arduino Nano ATMEGA328p running at 16 mHz. It would probably work
 // on other processors that have at least as much RAM and program memory as the Nano. It's a good idea to use
 // a Nano with an FT232 usb serial IO chip rather than the cheaper CH34x chip, because the FT232 will work much more seamlessly
 // with Mac computers for use with the Scratch Features. If you don't care about using Scratch on Mac then it doesn't matter.
+// Note that on some processors the SPI lines have different pin assignments than the nano so you may need to change a few things.
+
+///////////////////////// LICENSE FOR SDFAT LIBRARY BY BILL GREIMAN ////////////////////////////////////
+/**************************
+MIT License
+
+Copyright (c) 2011..2017 Bill Greiman
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+**********************/
+////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // This version fixes some issues with Scratch Record/Play and implements trim mode
 
@@ -48,9 +79,10 @@ int debugmode = 0;          // Set to 1 to get more debug messages. Warning: thi
                             // to the serial monitor to help you figure out what values will work. After that you can
                             // modify the values in the decode_button() function below to suite your DPAD button module.
 
-#include <SPI.h>
-#include <SD.h>
-#include <Wire.h>
+#define USE_SDIO 0
+#include <SdFat.h>
+SdFat SD;
+
 #include <SoftwareSerial.h>
 
 //////////////////////////////////////////
@@ -359,6 +391,306 @@ void setBeep(int f, int d) {
   BeepDur = d;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////// FORMAT SD CARD FUNCTIONS ///////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+///  NOTICE: The functions in this section were substancially derived from the work of Bill Greiman
+///  from the SDFormat example of his SDFat library. A license notice for use of this work appears near
+///  the beginning of this source file as required by the MIT license that governs this work.
+///  Here, we have modified the code to use less memory by making all the variables local, and we've also
+///  combined many of the functions, reduced the number of output strings, and done lots of other work
+///  to make it fit. This code only supports formatting cards up to 2 GB because it always uses FAT16 format.
+///  The SD card in the gamepad will be formatted (using the functions in this section)
+///  if you hold down R4 on the gamepad while booting. The format only takes a few seconds on 
+///  small cards (256 mb or less). It's always a full format with zero initialization. This can be used
+///  to recover cards that have gotten corrupted (usually by turning off the gamepad while recording),
+///  and it can convert small cards from FAT12 to FAT16.  The SDFat library (as well as the SD library that
+///  is bundled with Arduino IDE) cannot handle FAT12. The SD associations standards typically make cards
+///  64mb or smaller FAT12, making them unusable unless you use this function of the gamepad.
+
+#define SD_CSPIN 10  // the CS pin
+
+// Initialize at highest supported speed not over 50 MHz.
+// Reduce max speed if errors occur.
+#define SPI_SPEED SD_SCK_MHZ(50)
+
+// Print extra info for debug if DEBUG_SDFORMAT is nonzero
+#define DEBUG_SDFORMAT 0
+#undef DEBUG_SDFORMAT
+
+
+//  strings needed in file system structures
+char noName[] = "NO NAME    ";
+char fat16str[] = "FAT16   ";
+
+//------------------------------------------------------------------------------
+#define sdError(msg) Serial.println(msg)
+
+//------------------------------------------------------------------------------
+// write cached block to the card
+uint8_t writeCache(Sd2Card *card, cache_t *cache, uint32_t lbn) {
+  return card->writeBlock(lbn, cache->data);
+}
+//------------------------------------------------------------------------------
+
+
+//------------------------------------------------------------------------------
+// zero cache and optionally set the sector signature
+void clearCache(cache_t *cache, uint8_t addSig) {
+  memset(cache, 0, sizeof(*cache));
+  if (addSig) {
+    cache->mbr.mbrSig0 = BOOTSIG0;
+    cache->mbr.mbrSig1 = BOOTSIG1;
+  }
+}
+//------------------------------------------------------------------------------
+// zero FAT and root dir area on SD
+void clearFatDir(Sd2Card *card, cache_t *cache, uint32_t bgn, uint32_t count) {
+  clearCache(cache, false);
+  if (!card->writeStart(bgn, count)) {
+    sdError("0");
+    return;
+  }
+  for (uint32_t i = 0; i < count; i++) {
+    if ((i & 0XFF) == 0) {
+      sdError(".");
+    }
+    if (!card->writeData(cache->data)) {
+      sdError("1");
+    }
+  }
+  if (!card->writeStop()) {
+    sdError("2");
+  }
+}
+//------------------------------------------------------------------------------
+// return cylinder number for a logical block number
+#define lbnToCylinder(lbn) (lbn / (numberOfHeads * sectorsPerTrack))
+
+//------------------------------------------------------------------------------
+// return head number for a logical block number
+#define lbnToHead(lbn) ((lbn % (numberOfHeads * sectorsPerTrack)) / sectorsPerTrack)
+
+//------------------------------------------------------------------------------
+// return sector number for a logical block number
+#define lbnToSector(lbn) ((lbn % sectorsPerTrack) + 1)
+
+//------------------------------------------------------------------------------
+void SDCardFormat() {
+  Sd2Card card;
+ 
+  uint32_t cardSizeBlocks;
+  uint32_t cardCapacityMB;
+
+  // cache for SD block
+  cache_t cache;
+  // MBR information
+  uint8_t partType;
+  uint32_t relSector;
+  uint32_t partSize;
+  // Fake disk geometry
+  uint8_t numberOfHeads;
+  uint8_t sectorsPerTrack;
+  // FAT parameters
+  uint16_t reservedSectors;
+  uint8_t sectorsPerCluster;
+  uint32_t fatStart;
+  uint32_t fatSize;
+  uint32_t dataStart;
+  
+  // constants for file system structure
+#define BU16 128
+
+  if (!card.begin(SD_CSPIN, SPI_SPEED)) {
+    Serial.println("#FER"); // format error
+    return;
+  }
+  cardSizeBlocks = card.cardSize();
+  if (cardSizeBlocks == 0) {
+    sdError("3");
+    return;  // something's wrong, don't format
+  }
+  cardCapacityMB = (cardSizeBlocks + 2047)/2048;
+
+  Serial.print("#SD"); Serial.println(cardCapacityMB);  // output the number of megabytes for the detected card
+
+    ////////////////////////////////////
+    // flash erase all data
+    ////////////////////////////////////
+ {
+#define ERASE_SIZE 262144L
+  uint32_t firstBlock = 0;
+  uint32_t lastBlock;
+  //uint16_t n = 0;
+
+  do {
+    lastBlock = firstBlock + ERASE_SIZE - 1;
+    if (lastBlock >= cardSizeBlocks) {
+      lastBlock = cardSizeBlocks - 1;
+    }
+    if (!card.erase(firstBlock, lastBlock)) {
+      sdError("4");
+    }
+    firstBlock += ERASE_SIZE;
+  } while (firstBlock < cardSizeBlocks);
+
+  if (!card.readBlock(0, cache.data)) {
+    sdError("5");
+  }
+    ///////////////////////////////////////
+    //////////// initsizes ////////////////
+  if (cardCapacityMB <= 6) {
+    sdError("6");  //Card is too small.
+    return;   // can't format it
+  } else if (cardCapacityMB <= 16) {
+    sectorsPerCluster = 2;
+  } else if (cardCapacityMB <= 32) {
+    sectorsPerCluster = 4;
+  } else if (cardCapacityMB <= 64) {
+    sectorsPerCluster = 8;
+  } else if (cardCapacityMB <= 128) {
+    sectorsPerCluster = 16;
+  } else if (cardCapacityMB <= 1024) {
+    sectorsPerCluster = 32;
+  } else if (cardCapacityMB <= 2048) {
+    sectorsPerCluster = 64;
+  } else {
+    // too big to format as Fat16
+    sdError("#BIG");
+    return;
+  }
+
+  // set fake disk geometry
+  sectorsPerTrack = cardCapacityMB <= 256 ? 32 : 63;
+
+  if (cardCapacityMB <= 16) {
+    numberOfHeads = 2;
+  } else if (cardCapacityMB <= 32) {
+    numberOfHeads = 4;
+  } else if (cardCapacityMB <= 128) {
+    numberOfHeads = 8;
+  } else if (cardCapacityMB <= 504) {
+    numberOfHeads = 16;
+  } else if (cardCapacityMB <= 1008) {
+    numberOfHeads = 32;
+  } else if (cardCapacityMB <= 2016) {
+    numberOfHeads = 64;
+  } else if (cardCapacityMB <= 2048) {
+    numberOfHeads = 128;
+  } else {
+    return;
+  }
+ }
+    ///////////////////////////////////////
+    ///////////makefat16
+    //////////////////////////////////////
+ {
+  uint32_t nc;
+  for (dataStart = 2 * BU16;; dataStart += BU16) {
+    nc = (cardSizeBlocks - dataStart)/sectorsPerCluster;
+    fatSize = (nc + 2 + 255)/256;
+    uint32_t r = BU16 + 1 + 2 * fatSize + 32;
+    if (dataStart < r) {
+      continue;
+    }
+    relSector = dataStart - r + BU16;
+    break;
+  }
+  // check valid cluster count for FAT16 volume
+  if (nc < 4085 || nc >= 65525) {
+    sdError("8"); // bad cluster count
+    return;
+  }
+  reservedSectors = 1;
+  fatStart = relSector + reservedSectors;
+  partSize = nc * sectorsPerCluster + 2 * fatSize + reservedSectors + 32;
+  if (partSize < 32680) {
+    partType = 0X01;
+  } else if (partSize < 65536) {
+    partType = 0X04;
+  } else {
+    partType = 0X06;
+  }
+  ////////////////////////////// write MBR ////////////////////////////////
+  clearCache(&cache, true);
+  part_t* p = cache.mbr.part;
+  p->boot = 0;
+  uint16_t c = lbnToCylinder(relSector);
+  if (c > 1023) {
+    sdError("9");
+  }
+  p->beginCylinderHigh = c >> 8;
+  p->beginCylinderLow = c & 0XFF;
+  p->beginHead = lbnToHead(relSector);
+  p->beginSector = lbnToSector(relSector);
+  p->type = partType;
+  uint32_t endLbn = relSector + partSize - 1;
+  c = lbnToCylinder(endLbn);
+  if (c <= 1023) {
+    p->endCylinderHigh = c >> 8;
+    p->endCylinderLow = c & 0XFF;
+    p->endHead = lbnToHead(endLbn);
+    p->endSector = lbnToSector(endLbn);
+  } else {
+    // Too big flag, c = 1023, h = 254, s = 63
+    p->endCylinderHigh = 3;
+    p->endCylinderLow = 255;
+    p->endHead = 254;
+    p->endSector = 63;
+  }
+  p->firstSector = relSector;
+  p->totalSectors = partSize;
+  if (!writeCache(&card, &cache, 0)) {
+    sdError("10");  // can't write cache
+  }
+///////////////////////
+  clearCache(&cache,true);
+  fat_boot_t* pb = &cache.fbs;
+  pb->jump[0] = 0XEB;
+  pb->jump[1] = 0X00;
+  pb->jump[2] = 0X90;
+  for (uint8_t i = 0; i < sizeof(pb->oemId); i++) {
+    pb->oemId[i] = ' ';
+  }
+  pb->bytesPerSector = 512;
+  pb->sectorsPerCluster = sectorsPerCluster;
+  pb->reservedSectorCount = reservedSectors;
+  pb->fatCount = 2;
+  pb->rootDirEntryCount = 512;
+  pb->mediaType = 0XF8;
+  pb->sectorsPerFat16 = fatSize;
+  pb->sectorsPerTrack = sectorsPerTrack;
+  pb->headCount = numberOfHeads;
+  pb->hidddenSectors = relSector;
+  pb->totalSectors32 = partSize;
+  pb->driveNumber = 0X80;
+  pb->bootSignature = EXTENDED_BOOT_SIG;
+  pb->volumeSerialNumber = (cardSizeBlocks << 8) + micros();
+  memcpy(pb->volumeLabel, noName, sizeof(pb->volumeLabel));
+  memcpy(pb->fileSystemType, fat16str, sizeof(pb->fileSystemType));
+  // write partition boot sector
+  if (!writeCache(&card, &cache, relSector)) {
+    sdError("11"); //pbf failed
+  }
+  // clear FAT and root directory
+  clearFatDir(&card, &cache, fatStart, dataStart - fatStart);
+  clearCache(&cache, false);
+  cache.fat16[0] = 0XFFF8;
+  cache.fat16[1] = 0XFFFF;
+  // write first block of FAT and backup for reserved clusters
+  if (!writeCache(&card, &cache, fatStart)
+      || !writeCache(&card, &cache, fatStart + fatSize)) {
+    sdError("12"); //Fat16 reserve failed
+  }
+ }
+ card.spiStop();
+ Serial.println("#FMTOK");
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////// END OF FORMAT SD CARD FUNCTIONS /////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // Open a scratch recording file.
 // Closes any prior recording file first. This may be the same file, if so then this
 // effectively just rewinds it.
@@ -400,6 +732,9 @@ void removeScratchRecordFile(char cmd, char subcmd, char dpad) {
 
 void removeAllRecordFiles() {
   SDGamepadRecordFile.close();
+#if DEBUG_SD
+  Serial.println("SDCL0");
+#endif
   SDScratchRecordFile.close();
   SD.remove(SDGamepadRecordFileName);
 
@@ -462,18 +797,18 @@ int sendbeep(int noheader) {
 
 }
 
-void SendNextRecordedFrame(File file, char *filename, int loop) {
-        int length = file.read(); // first byte is the number of bytes in the frame to send
+void SendNextRecordedFrame(File *file, char *filename, int loop) {
+        int length = file->read(); // first byte is the number of bytes in the frame to send
         
 #if DEBUG_SD
-        Serial.print("#L"); Serial.println(length);
+        Serial.print("#L"); Serial.print(length); Serial.print(" avail:"); Serial.println(file->available());
 #endif
-        if (length <= 0 || file.available() < length+1) { // we are at the end of the file
+        if (length <= 0 || file->available() < length+1) { // we are at the end of the file
           if (loop) {
             // rewind to start of file and just keep going in this state to loop
-            file.seek(0);
-            length = file.read();
-            if (file.available() < length+1) { // something's wrong, the file is damaged, return
+            file->seek(0);
+            length = file->read();
+            if (file->available() < length+1) { // something's wrong, the file is damaged, return
               return;
             }
             Serial.println("#LOOP");
@@ -481,12 +816,18 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
             if (GRecState == GREC_PLAYING) {
               GRecState = GREC_STOPPED;
               SDGamepadRecordFile.close();
+#if DEBUG_SD
+  Serial.println("SDCL1");
+#endif
             }
             if (SRecState == SREC_PLAYING) {
               SRecState = SREC_STOPPED;
               SDScratchRecordFile.close();
             }
-            file.close(); // it's ok to close the file twice
+            file->close(); // it's ok to close the file twice
+#if DEBUG_SD
+  Serial.println("SDCL1b");
+#endif
             return;
           }
         }
@@ -499,7 +840,7 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
           // so write its length into the gamepad recording file.
           //SDGamepadRecordFile.write(length);
 #if DEBUG_SD
-          Serial.print("#SC>GR L="); Serial.println(length);
+          //Serial.print("#SC>GR L="); Serial.println(length);
 #endif
         }
         BlueTooth.print("V1");
@@ -509,15 +850,15 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
 #endif
         {
             int checksum = length+5;  // the length byte is included in the checksum
-            for (int i = 0; i < length && file.available()>0; i++) {
-              int c = file.read();
+            for (int i = 0; i < length && file->available()>0; i++) {
+              int c = file->read();
               checksum += c;
               BlueTooth.write(c);
               if (SRecState == SREC_PLAYING && GRecState == GREC_RECORDING) {
                 // in this case we know the file we're reading from must be a scratch recording that's now playing
                 // and we're also recording using the gamepad record feature, so we need to write this byte into the gamepad
                 // recording file
-                //SDGamepadRecordFile.write(c);
+                //SDGamepadRecordFile.write(c);  DISABLED DUE TO TECHNICAL ISSUES
 #if DEBUG_SD
                 Serial.print("#SC>GR@");  Serial.print(SDScratchRecordFile.position()); Serial.print(":"); Serial.println(SDGamepadRecordFile.position()); // scratch data written to gamepad recording file
 #endif
@@ -536,7 +877,7 @@ void SendNextRecordedFrame(File file, char *filename, int loop) {
         }
 
 #if DEBUG_SD
-        Serial.print("#P:"); Serial.print(filename); Serial.println(file.position());
+        Serial.print("#P:"); Serial.print(filename); Serial.println(file->position());
 #endif
 }
 
@@ -547,6 +888,9 @@ void RecordPlayHandler() {
 
   // first let's see if scratch is playing a command right now from a SD card button file
   if (SRecState == SREC_PLAYING) {
+#if DEBUG_SD
+    Serial.println("#SCRPL");
+#endif
      if (!SDScratchRecordFile) {
       // something is wrong, the file is not open
       Serial.print("#E:"); Serial.println(SDScratchRecordFileName); // "Scratch Play Error"
@@ -556,7 +900,7 @@ void RecordPlayHandler() {
 
      if (millis() > NextTransmitTime) {
           NextTransmitTime = millis() + REC_FRAMEMILLIS;
-          SendNextRecordedFrame(SDScratchRecordFile, SDScratchRecordFileName, 1); // always loop scratch recordings
+          SendNextRecordedFrame(&SDScratchRecordFile, SDScratchRecordFileName, 1); // always loop scratch recordings
      }
 
      return;  // in this case we don't need to continue with the rest of the code because we've taken care of both
@@ -603,9 +947,9 @@ void RecordPlayHandler() {
         // If we get here, it's time to transmit the next record over bluetooth
         GRecNextEventTime = millis() + REC_FRAMEMILLIS;
 #if DEBUG_SD
-        Serial.print("#P:"); Serial.print(SDGamepadRecordFileName);Serial.print("@");Serial.print((long)SDGamepadRecordFile.position()); println();
+        Serial.print("#P:"); Serial.print(SDGamepadRecordFileName);Serial.print("@");Serial.print(SDGamepadRecordFile.position()); println();
 #endif
-        SendNextRecordedFrame(SDGamepadRecordFile, (char *)SDGamepadRecordFileName, PlayLoopMode);
+        SendNextRecordedFrame(&SDGamepadRecordFile, (char *)SDGamepadRecordFileName, PlayLoopMode);
     } 
       break;
 
@@ -649,7 +993,10 @@ void RecordPlayHandler() {
       GRecNextEventTime = 0;
       GRecState = GREC_STOPPED;
       SDGamepadRecordFile.flush();  // it's safe to do all these operations without checking if the file is open
-      SDGamepadRecordFile.seek(0);       
+      SDGamepadRecordFile.seek(0); 
+#if DEBUG_SD
+  Serial.println("SDrw0");
+#endif      
 
 #if DEBUG_SD
       Serial.println("#RW");
@@ -665,10 +1012,17 @@ void RecordPlayHandler() {
 }
 
 void setup() {
-  // right away, see if we're supposed to be in trim mode
-  if (scanmatrix() == WALK_1) {
+    Serial.begin(9600);
+  // see if we're supposed to be in trim mode or card format mode
+  int mat = scanmatrix();
+  if (mat == WALK_1) {
     Serial.println("#trim");
     TrimMode = 1;
+  } else if (mat == REC_ERASE) {
+    // Format the SD card
+    Serial.println("#sdfmt");
+    SDCardFormat();
+    Serial.println("#sdfmt done");
   }
   // make a characteristic flashing pattern to indicate the gamepad code is loaded.
   pinMode(13, OUTPUT);
@@ -679,7 +1033,7 @@ void setup() {
   // after this point you can't flash the led on pin 13 because we're using it for SD card
 
   BlueTooth.begin(38400);
-  Serial.begin(9600);
+
   Serial.println(Version);
 
   pinMode(A0, OUTPUT);  // extra ground for additional FTDI port if needed
@@ -850,7 +1204,7 @@ int handleSerialInput() {
                 SDScratchRecordFile) {
 
 #if DEBUG_SD
-                  Serial.println("#OPEN");
+                  Serial.println("#OP");
 #endif
                   return dataread;
             }
@@ -912,6 +1266,11 @@ void send_trim(int matrix, int dpad) {
 }
 
 void loop() {
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#LOOP:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
   int matrix = scanmatrix();
   CurDpad = decode_button(analogRead(DpadPin));
   
@@ -974,6 +1333,9 @@ void loop() {
     // Scratch commands there's a clean scratch block feature for that.
     GRecState = GREC_STOPPED;
     SDGamepadRecordFile.close();
+#if DEBUG_SD
+  Serial.println("SDCL3");
+#endif
   }
 
   if (millis() < suppressButtonsUntil) {
@@ -1005,6 +1367,10 @@ void loop() {
           if (!SDGamepadRecordFile) {
             // if it wasn't already open, open it for writing at the end
             SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
+#if DEBUG_SD
+  Serial.println("SDGPOP1");
+#endif
+  
           }
           if (SDGamepadRecordFile) {
             GRecState = GREC_RECORDING;
@@ -1021,6 +1387,11 @@ void loop() {
       break;
 
      case REC_PLAY:
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#REC_PLAY:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
       longClick = 0;
       if (priormatrix == -1) {  // again, this button takes on different meanings so debounce
         PlayLoopMode = 0;
@@ -1029,6 +1400,9 @@ void loop() {
           if (!SDGamepadRecordFile) {
             SDGamepadRecordFile = SD.open(SDGamepadRecordFileName, FILE_WRITE);
             SDGamepadRecordFile.seek(0);  // rewind to start of file
+#if DEBUG_SD
+  Serial.println("SDrw1");
+#endif 
           }
           if (SDGamepadRecordFile) {
             GRecState = GREC_PLAYING;
@@ -1038,12 +1412,22 @@ void loop() {
           }
         } else if (GRecState == GREC_PLAYING) {
           // if the state was already playing, the hitting the play button pauses the current playback
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#PSH:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
           GRecState = GREC_PAUSED;
           setBeep(BF_NOTIFY, BD_MED);
 #if DEBUG_SD
           debug("#PS"); debugln();
 #endif
         } else {
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#GSPLAY:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
           GRecState = GREC_PLAYING;
           setBeep(BF_NOTIFY, BD_MED);
         }
@@ -1065,6 +1449,9 @@ void loop() {
         setBeep(BF_ERASE, BD_SHORT);
       } else if (millis() - curmatrixstarttime > 2000) { // very long tap required to erase for safety
         SDGamepadRecordFile.close();
+#if DEBUG_SD
+  Serial.println("SDCL4");
+#endif
         SD.remove(SDGamepadRecordFileName);
         GRecState = GREC_STOPPED;
 #if DEBUG_SD
@@ -1079,7 +1466,11 @@ void loop() {
   }
 
   priormatrix = matrix;
-
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#PRMAT:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
   //
   // The following code handles the Scratch recording to a mode button feature
   //
@@ -1099,6 +1490,9 @@ void loop() {
     if (GRecState == GREC_RECORDING || GRecState == GREC_PLAYING) {
       GRecState = GREC_STOPPED;
       SDGamepadRecordFile.close();
+#if DEBUG_SD
+  Serial.println("#SDCL5");
+#endif
     }
     // see if a special command is already in progress
     if (SRecState == SREC_PLAYING && 
@@ -1150,9 +1544,17 @@ void loop() {
 #endif
     }
   }
-
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#BEFORERECPLYHNDLER:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
   RecordPlayHandler();  // handle the record/play mode
-
+#if DEBUG_SD
+        if (SDGamepadRecordFile) {
+          Serial.print("#AFTRERECPLYHNDLER:"); Serial.print((long)SDGamepadRecordFile.position()); println();
+        }
+#endif
   if (millis() > NextTransmitTime  && GRecState != GREC_PLAYING && SRecState != SREC_PLAYING ) { // don't transmit joystick controls during replay mode!
 
     // Packet consists of:
