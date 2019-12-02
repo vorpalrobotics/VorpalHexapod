@@ -1,6 +1,6 @@
 // Copyright (C) 2017 Vorpal Robotics, LLC.
 
-const char *Version = "#GV2r1";  // this version adds SD card formatting when booting while holding down R4
+const char *Version = "#GV2r1a";  // this version adds DPAD encoding auto-detect and EEPROM storage
 
 // This is the code that runs on the robot in the Vorpal The Hexapod project.
 
@@ -84,6 +84,7 @@ int debugmode = 0;          // Set to 1 to get more debug messages. Warning: thi
 SdFat SD;
 
 #include <SoftwareSerial.h>
+#include <EEPROM.h>
 
 //////////////////////////////////////////
 // Gamepad layout, using variable names used in this code:
@@ -166,6 +167,13 @@ SoftwareSerial BlueTooth(A5,A4);  // connect bluetooth module Tx=A5=Yellow wire 
 #define REC_PLAY 13
 #define REC_REWIND 14
 #define REC_ERASE 15
+
+// Dpad styles. Some dpads use different output ranges for buttons
+#define STDDPADSTYLE 0
+#define ALTDPADSTYLE 1
+#define NUMDPADSTYLES 2
+
+byte DpadStyle = STDDPADSTYLE;
 
 // Pin definitions
 
@@ -306,28 +314,46 @@ char decode_button(int b) {
   Serial.print("DPAD: "); Serial.println(b);
 #endif
 
-// If your DPAD is doing the wrong things for each button, and you didn't
-// purchase it from Vorpal Robotics, LLC, then you may have a defective
-// DPAD module that outputs nonstandard values. Turn on DEPADDEBUG mode,
-// then use the serial monitor to find out what values your buttons are
-// returning. Modify the code below to return the correct values for each
-// button.
+// If your DPAD is doing the wrong things for each button, try using the ALTDPAD mode.
+// The gamepad will detect this automatically if you hold down the "Special" (top) DPAD button
+// while booting.
 
-  if (b < 100) {
-     return 'b';  // backward (bottom button)
-  } else if (b < 200) {
-     return 'l';  // left 
-  } else if (b < 400) {
-    return 'r';   // right
-  } else if (b < 600) {
-    return 'f';  // forward (top of diamond)
-  } else if (b < 850) {
-    return 'w';  // weapon (very top button) In the documentation this button is called "Special"
-                 // but a long time ago we called it "weapon" because it was used in some other
-                 // robot projects that were fighting robots. The code still uses "w" since "s" means stop.
-  } else {
-    return 's';  // stop (no button is pressed)
-  }
+  switch (DpadStyle) {
+  case ALTDPADSTYLE:
+    if (b < 20) {
+       return 'b';  // backward (bottom button)
+    } else if (b < 60) {
+       return 'l';  // left 
+    } else if (b < 130) {
+      return 'r';   // right
+    } else if (b < 250) {
+      return 'f';  // forward (top of diamond)
+    } else if (b < 800) {
+      return 'w';  // weapon (very top button) In the documentation this button is called "Special"
+                   // but a long time ago we called it "weapon" because it was used in some other
+                   // robot projects that were fighting robots. The code still uses "w" since "s" means stop.
+    } else {
+      return 's';  // stop (no button is pressed)
+    }
+
+  case STDDPADSTYLE:
+  default:
+    if (b < 100) {
+       return 'b';  // backward (bottom button)
+    } else if (b < 200) {
+       return 'l';  // left 
+    } else if (b < 400) {
+      return 'r';   // right
+    } else if (b < 600) {
+      return 'f';  // forward (top of diamond)
+    } else if (b < 850) {
+      return 'w';  // weapon (very top button) In the documentation this button is called "Special"
+                   // but a long time ago we called it "weapon" because it was used in some other
+                   // robot projects that were fighting robots. The code still uses "w" since "s" means stop.
+    } else {
+      return 's';  // stop (no button is pressed)
+    }
+  } // end of switch DpadStyle
 }
 
 //////////////////////////////////////////////////////////
@@ -1028,7 +1054,7 @@ void setup() {
   pinMode(13, OUTPUT);
   for (int i = 0; i < 3; i++) {
     digitalWrite(13, !digitalRead(13));
-    delay(400);
+    delay(250);
   }
   // after this point you can't flash the led on pin 13 because we're using it for SD card
 
@@ -1047,8 +1073,41 @@ void setup() {
   
   if (!SD.begin(SDCHIPSELECT)) {
     Serial.println("#SDBF");    // SD Begin Failed
-    return;
   }
+
+  // see if auto-detect dpad button decoding style is selected (by user holding
+  // down top button on the dpad during boot. If not, then also check to see
+  // a DPAD button style has been previously stored in EEPROM at position 0
+  //
+  int dp = analogRead(DpadPin);
+  //Serial.println(dp); // uncomment this if you're having trouble with DPAD autodetect
+  if (dp < 800) { // some dpad button is being held
+    Serial.print("#DP"); // DPAD AutoDetect
+    if (dp > 250 && dp < 500) { // Alternative dpad detected
+      DpadStyle = ALTDPADSTYLE;
+      Serial.println("ALT");
+    } else if (dp > 600 && dp < 850) { // standard dpad
+      DpadStyle = STDDPADSTYLE;
+      Serial.println("STD");
+    } else {
+      Serial.println(dp); // not detected, something's wrong, just leave it at the default
+    }
+    EEPROM.update(0, DpadStyle); // save for future boots
+  } else {
+    // check to see if a prior dpad style has been selected and stored in the
+    // EEPROM at position 0
+    dp = EEPROM.read(0);
+    if (dp < NUMDPADSTYLES) { // any value greater or equal to NUMDPADSTYLES is invalid
+      DpadStyle = dp;
+      Serial.print("#DPE"); // DPAD EEPROM detect
+      if (DpadStyle == STDDPADSTYLE) { 
+        Serial.println("STD");
+      } else {
+        Serial.println("ALT");
+      }
+    }
+  }
+  
 }
 
 int priormatrix = -1;
