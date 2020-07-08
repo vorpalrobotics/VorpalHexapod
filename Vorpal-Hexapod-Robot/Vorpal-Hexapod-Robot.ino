@@ -2,11 +2,11 @@
 ////////////////////////////////////////////////////////////////////////////////
 //           Vorpal Hexapod Control Program  
 //
-// Copyright (C) 2017, 2018 Vorpal Robotics, LLC.
+// Copyright (C) 2017, 2018, 2019, 2020 Vorpal Robotics, LLC.
 //
 // See below all the license comments for new features in this version. (Search for NEW FEATURES)
 
-const char *Version = "#RV2r1a";
+const char *Version = "#RV3r1a"; // This version introduces new leg motions on double-click gamepad modes
 
 //////////// FOR MORE INFORMATION ///////////////////////////////////
 // Main website:                  http://www.vorpalrobotics.com
@@ -88,36 +88,29 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 *******************************************************************************/
 /////////////////////////////////////////////////////////////////////////////////
 
-////////////// NEW IN THIS RELEASE /////////////////////
-// This release has two major new items:
+////////////// NEW FEATURES IN THIS RELEASE (V3) /////////////////////
+// 1) The biggest new feature in this release is support for a second level of actions using double clicks on the gamepad.
+// So there are four new walking modes, four new dance modes, and four new fight/tilt modes. Double clicks do not affect
+// record play functions.
+//
+// 2) There is now a safety feature whereby if you're switching between modes and all six legs may not be touching the
+//    floor, then there is a 200 millisecond period where the robot is brought back to a standing position before
+//    transitioning to the new mode. This avoids
+//    stressing the servos when, for example, the robot goes from being on the floor directly into fight mode 1 where only
+//    four legs support the robot.
+//
+// 3) Support for alternative timings of leg motions for different sized robots (hexapod, megapod, gigapod) Search for HEXSIZE
+//    and read the comments there.
+//
+//
+//////////////////// New features in the prior release (V2):
 // 1) Grip Arm support. When the robot dial is set to a position between DEMO and RC this code replaces
 //    F2 fight mode with grip arm controls. Forward and Backward DPAD buttons raise and lower
 //    the grip arm. Left opens and right closes the claw. The grip arm kit is open source, see
 //    the list of links near the top of this file for more information.
 //
-// 2) Safe Legs. [Currently disabled] The old code allowed gamepad users to rapidly switch between any two motions
-//    and some combinations of switches would super stress the servos. We believe this was a
-//    major cause of servo wear. For example, if you switched from D1 LEFT (three legs up dancing)
-//    to D1 RIGHT (the other three legs up) then depending on timing, you could slam the robot to
-//    the ground and then it would attempt to rise up using only 3 legs. It really takes at least 4
-//    legs to get the robot off the ground but preferably when rising up from the ground you should
-//    try to use all six to keep the servos happy. So this really stresses the three servos trying to lift
-//    the robot. Often the robot would only partially rise in this situation, causing the three servos
-//    on the ground to stall and they would rapidly overheat if the user keeps the robot like this
-//    for any length of time. This kind of thing can also happen with certain combinations of D4 (Mr. Hands
-//    Mode) and F1 or F2 (fight mode in which two legs are off the ground.
-//    We noticed that in public demos, little kids would do things like this all the time, and usually by
-//    the end of the day we'd have a dead servo on half the demo robots, or more if it was a really rough crowd.
-//    Anway, to make a long story longer, this release attempts to detect this situation and inserts a short (0.2 second)
-//    extra move where all six legs go to the ground, followed by the requested action.
-//    The method employed is a bit crude, we just keep a flag SomeLegsUp that is set to 1 whenever a requested move
-//    would have less than all the legs on the ground. If a new requested move also would not have all legs on the ground
-//    then a short intermediate move is inserted to get the robot up using all the legs. 
-//    There's a better way that we will pursue in a future
-//    release which involves keeping a model of how many legs are on the ground and detecting situations where the
-//    intermediate move is needed. This other method is harder to implement but has the advantage that it would
-//    detect and correct even Scratch programs that would overstress the servos. The method implemented in this release
-//    will not be able to correct for an errant scratch program that triggers this situation.
+//  2) Lots of little fixes and improvements.
+//
 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
@@ -135,6 +128,23 @@ int FreqMult = 1;   // PWM frequency multiplier, use 1 for analog servos and up 
 byte SomeLegsUp = 0;  // this is a flag to detect situations where a user rapidly switches moves that would
                       // cause the robot to try to come up off the ground using fewer than all the legs 
                       //(and thus over-stressing the servos).
+
+#define HEXSIZE 0 // set this to 0 for hexapod, 1 for megapod and 2 for gigapod. The megapod works ok at 0 as well, but crawl mode doesn't get anywhere. Don't run the gigapod on anything other than 2!
+
+#if HEXSIZE == 0
+#define TIMEFACTOR 10L
+#define HEXAPOD
+#endif
+
+#if HEXSIZE == 1
+#define TIMEFACTOR 9L // slightly slower, 90% speed
+#define MEGAPOD
+#endif
+
+#if HEXSIZE == 2
+#define TIMEFACTOR 7L // much slower
+#define GIGAPOD
+#endif
 
 // NOTE: For digital servos such as Genuine Tower Pro MG90S or Turnigy MG90S we recommend putting
 // a smal rubber washer on the hip servo shaft before putting the servo horn on. This will reduce or eliminate
@@ -179,10 +189,12 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 // bottom six bits. LSB is leg number 0
 
 #define ALL_LEGS      0b111111
-#define LEFT_LEGS     0b111000
-#define RIGHT_LEGS    0b000111
+#define LEFT_LEGS     0b000111
+#define RIGHT_LEGS    0b111000
 #define TRIPOD1_LEGS  0b010101
 #define TRIPOD2_LEGS  0b101010
+#define QUAD1_LEGS    0b001001
+#define QUAD2_LEGS    0b100100
 #define FRONT_LEGS    0b100001
 #define MIDDLE_LEGS   0b010010
 #define BACK_LEGS     0b001100
@@ -228,10 +240,13 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 
 #define KNEE_TRIPOD_UP (KNEE_NEUTRAL-40)
 #define KNEE_TRIPOD_ADJ 30
+#define KNEE_RIPPLE_UP (KNEE_NEUTRAL-40)
+#define KNEE_RIPPLE_DOWN (KNEE_DOWN)
+#define TWITCH_ADJ 60
 
 #define HIPSWING 25      // how far to swing hips on gaits like tripod or quadruped
 #define HIPSMALLSWING 10  // when in fine adjust mode how far to move hips
-#define HIPSWING_RIPPLE 20
+#define HIPSWING_RIPPLE 25
 #define HIP_FORWARD_MAX 175
 #define HIP_FORWARD (HIP_NEUTRAL+HIPSWING)
 #define HIP_FORWARD_SMALL (HIP_NEUTRAL+HIPSMALLSWING)
@@ -252,12 +267,15 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 // these modes are used to interpret incoming bluetooth commands
 
 #define TRIPOD_CYCLE_TIME 750
-#define RIPPLE_CYCLE_TIME 1800
+#define RIPPLE_CYCLE_TIME 1000
 #define FIGHT_CYCLE_TIME 660
 
 #define MODE_WALK   'W'
+#define MODE_WALK2  'X'
 #define MODE_DANCE  'D'
+#define MODE_DANCE2 'Y'
 #define MODE_FIGHT  'F'
+#define MODE_FIGHT2 'Z'
 #define MODE_RECORD 'R'
 #define MODE_LEG    'L'       // comes from scratch
 #define MODE_GAIT   'G'       // comes from scratch
@@ -274,6 +292,8 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 
 #define GRIPARM_ELBOW_SERVO 12
 #define GRIPARM_CLAW_SERVO  13
+#define MAX_GRIPSERVOS 2
+
 #define GRIPARM_ELBOW_DEFAULT 90
 #define GRIPARM_CLAW_DEFAULT 90
 #define GRIPARM_ELBOW_MIN 30
@@ -285,13 +305,10 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 #define GRIPARM_ELBOW_NEUTRAL 90
 #define GRIPARM_CLAW_NEUTRAL 90
 
-int GripArmElbowTarget=90, GripArmClawTarget=90;
-
 // Definitions for the servos
 
-#define MAX_GRIPSERVOS 2
-
-short ServoPos[2*NUM_LEGS+MAX_GRIPSERVOS]; // the last commanded position of each servo
+unsigned short ServoPos[2*NUM_LEGS+MAX_GRIPSERVOS]; // the last commanded position of each servo
+unsigned short ServoTarget[2*NUM_LEGS+MAX_GRIPSERVOS];
 long ServoTime[2*NUM_LEGS+MAX_GRIPSERVOS]; // the time that each servo was last commanded to a new position
 byte ServoTrim[2*NUM_LEGS+MAX_GRIPSERVOS];  // trim values for fine adjustments to servo horn positions
 long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
@@ -308,6 +325,11 @@ unsigned long LastValidReceiveTime = 0;  // last time we got a completely valid 
 int Dialmode;   // What's the robot potentiometer set to?
 
 #define NUM_GRIPSERVOS ((Dialmode == DIALMODE_RC_GRIPARM)?2:0)  // if we're in griparm mode there are 2 griparm servos, else there are none
+
+unsigned long hexmillis() {  // millis that takes into account hexapod size for leg timings
+  unsigned long m = (millis() * TIMEFACTOR)/10L;
+  return m;
+}
 
 void beep(int f, int t) {
   if (f > 0 && t > 0) {
@@ -364,9 +386,10 @@ void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw) {
   setLeg(legmask, hip_pos, knee_pos, adj, raw, 0);
 }
 
+// This is the full version of setLeg with all the features
 void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw, int leanangle) {
   for (int i = 0; i < NUM_LEGS; i++) {
-    if (legmask & 0b1) {  // if the lowest bit is ON
+    if (legmask & 0b1) {  // if the lowest bit is ON then we are moving this leg
       if (hip_pos != NOMOVE) {
         if (!raw) {
           setHip(i, hip_pos, adj);
@@ -394,7 +417,7 @@ void setLeg(int legmask, int hip_pos, int knee_pos, int adj, int raw, int leanan
         setKnee(i, pos);
       }
     }
-    legmask = (legmask>>1);  // shift down one bit position
+    legmask = (legmask>>1);  // shift down one bit position to check the next legmask bit
   }
 }
 
@@ -434,6 +457,19 @@ void setHip(int leg, int pos, int adj) {
   setHipRaw(leg, pos);
 }
 
+// this version of setHip doesn't do mirror images like raw, but it
+// does honor the adjust parameter to shift the front/back legs
+
+void setHipRawAdj(int leg, int pos, int adj) {
+  if (leg == 5 || leg == 2) {
+    pos += adj;
+  } else if (leg == 0 || leg == 3) {
+    pos -= adj;
+  }
+
+  setHipRaw(leg, pos);
+}
+
 void setKnee(int leg, int pos) {
   // find the knee associated with leg if this is not already a knee
   if (leg < KNEE_OFFSET) {
@@ -462,7 +498,7 @@ void turn(int ccw, int hipforward, int hipbackward, int kneeup, int kneedown, lo
 #define NUM_TURN_PHASES 6
 #define FBSHIFT_TURN    40   // shift front legs back, back legs forward, this much
   
-  long t = millis()%timeperiod;
+  long t = hexmillis()%timeperiod;
   long phase = (NUM_TURN_PHASES*t)/timeperiod;
 
   //Serial.print("PHASE: ");
@@ -533,7 +569,7 @@ void wave(int dpad) {
 #define NUM_WAVE_PHASES 12
 #define WAVE_CYCLE_TIME 900
 #define KNEE_WAVE  60
-  long t = millis()%WAVE_CYCLE_TIME;
+  long t = hexmillis()%WAVE_CYCLE_TIME;
   long phase = (NUM_WAVE_PHASES*t)/WAVE_CYCLE_TIME;
 
   if (dpad == 'b') {
@@ -614,72 +650,6 @@ void wave(int dpad) {
   }
 }
 
-void gait_sidestep(int left, long timeperiod) {
-
-  // the gait consists of 6 phases and uses tripod definitions
-
-#define NUM_SIDESTEP_PHASES 6
-#define FBSHIFTSS    50   // shift front legs back, back legs forward, this much
-  
-  long t = millis()%timeperiod;
-  long phase = (NUM_SIDESTEP_PHASES*t)/timeperiod;
-  int side1 = LEFT_LEGS;
-  int side2 = RIGHT_LEGS;
-
-  if (left == 0) {
-    side1 = RIGHT_LEGS;
-    side2 = LEFT_LEGS;
-  }
-
-  //Serial.print("PHASE: ");
-  //Serial.println(phase);
-
-  transactServos();
-  
-  switch (phase) {
-    case 0:
-      // Lift up tripod group 1 while group 2 goes to neutral setting
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_UP, FBSHIFTSS);
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
-      break;
-
-    case 1:
-      // slide over by curling one side under the body while extending the other side
-      setLeg(TRIPOD2_LEGS&side1, HIP_NEUTRAL, KNEE_DOWN, FBSHIFTSS);
-      setLeg(TRIPOD2_LEGS&side2, HIP_NEUTRAL, KNEE_RELAX, FBSHIFTSS);
-      break;
-
-    case 2: 
-      // now put the first set of legs back down on the ground
-      // and at the sametime put the curled legs into neutral position
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
-      break;
-
-    case 3:
-      // Lift up tripod group 2 while group 2 goes to neutral setting
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_UP, FBSHIFTSS);
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);  
-      break;
-      
-    case 4:
-      // slide over by curling one side under the body while extending the other side
-      setLeg(TRIPOD1_LEGS&side1, HIP_NEUTRAL, KNEE_DOWN, FBSHIFTSS);
-      setLeg(TRIPOD1_LEGS&side2, HIP_NEUTRAL, KNEE_RELAX, FBSHIFTSS);
-      break;
-
-    case 5:
-      // now put all the legs back down on the ground, then the cycle repeats
-      setLeg(TRIPOD1_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
-      setLeg(TRIPOD2_LEGS, HIP_NEUTRAL, KNEE_NEUTRAL, FBSHIFTSS);
-      break;
-  }
-  commitServos();
-}
-
-int GripArmElbowDestination = 90;
-short GripArmElbowIncrement = 0;
-
 void griparm_mode(char dpad) {
     // this mode retains state and moves slowly
 
@@ -689,70 +659,30 @@ void griparm_mode(char dpad) {
       switch (dpad) {
       case 's': 
         // do nothing in stop mode, just hold current position
-        GripArmElbowTarget = ServoPos[GRIPARM_ELBOW_SERVO];
-        GripArmClawTarget = ServoPos[GRIPARM_CLAW_SERVO];
+        ServoTarget[GRIPARM_ELBOW_SERVO] = ServoPos[GRIPARM_ELBOW_SERVO];
+        ServoTarget[GRIPARM_CLAW_SERVO] = ServoPos[GRIPARM_CLAW_SERVO];
         break;
       case 'w':  // reset to standard grip arm position, arm raised to mid-level and grip open a medium amount
-        GripArmElbowTarget = GRIPARM_ELBOW_DEFAULT;
-        GripArmClawTarget = GRIPARM_CLAW_DEFAULT;
+        ServoTarget[GRIPARM_ELBOW_SERVO] = GRIPARM_ELBOW_DEFAULT;
+        ServoTarget[GRIPARM_CLAW_SERVO] = GRIPARM_CLAW_DEFAULT;
         break;
       case 'f': // Elbow up
-        GripArmElbowTarget = GRIPARM_ELBOW_MIN;
+        ServoTarget[GRIPARM_ELBOW_SERVO] = GRIPARM_ELBOW_MIN;
         break;
       case 'b': // Elbow down
-        GripArmElbowTarget = GRIPARM_ELBOW_MAX;
+        ServoTarget[GRIPARM_ELBOW_SERVO] = GRIPARM_ELBOW_MAX;
         break;
       case 'l':  // Claw closed
-        GripArmClawTarget = GRIPARM_CLAW_MAX;
+        ServoTarget[GRIPARM_CLAW_SERVO] = GRIPARM_CLAW_MAX;
         break;
       case 'r': // Claw open
-        GripArmClawTarget = GRIPARM_CLAW_MIN;
+        ServoTarget[GRIPARM_CLAW_SERVO] = GRIPARM_CLAW_MIN;
         break;
     }
 
-    // Now that all the targets are adjusted, move the servos toward their targets, slowly
-
-#define GRIPMOVEINCREMENT 10  // degrees per transmission time delay
-
-      int h, k;
-      h = ServoPos[GRIPARM_ELBOW_SERVO];
-      k = ServoPos[GRIPARM_CLAW_SERVO];
-      int diff = GripArmClawTarget - k;
-      
-      if (diff <= -GRIPMOVEINCREMENT) {
-        // the claw has a greater value than the target
-        k -= GRIPMOVEINCREMENT;
-      } else if (diff >= GRIPMOVEINCREMENT) {
-        // the claw has a smaller value than the target
-        k += GRIPMOVEINCREMENT;
-      } else {
-        // the claw is within MOVEINCREMENT of the target so just go to target
-        k = GripArmClawTarget;
-      }
-
-      setServo(GRIPARM_CLAW_SERVO, k);
-
-      diff = GripArmElbowTarget - h;
-
-      // smooth move mode on elbow
-      if (diff < -GRIPMOVEINCREMENT) {
-        // the elbow has a greater value than the target
-        h -= GRIPMOVEINCREMENT;
-      } else if (diff >= GRIPMOVEINCREMENT) {
-        // the elbow has a smaller value than the target
-        h += GRIPMOVEINCREMENT;
-      } else {
-        // the elbow is within MOVEINCREMENT of the target so just go to target
-        h = GripArmElbowTarget;
-      }
-      GripArmElbowDestination = h;
-      GripArmElbowIncrement = (h < ServoPos[GRIPARM_ELBOW_SERVO])?-2:2;
-      //Serial.print("GADest="); Serial.print(h); Serial.print(" GAinc="); Serial.println(GripArmElbowIncrement);
+    // The Smoothmove function will take care of moving the grip arm servos to targets
     
 }
-
-unsigned short KneeTarget[NUM_LEGS];
-unsigned short HipTarget[NUM_LEGS];
 
 void fight_mode(char dpad, int mode, long timeperiod) {
 
@@ -774,32 +704,32 @@ void fight_mode(char dpad, int mode, long timeperiod) {
       case 's': 
         // do nothing in stop mode, just hold current position
         for (int i = 0; i < NUM_LEGS; i++) {
-          KneeTarget[i] = ServoPos[i+NUM_LEGS];
-          HipTarget[i] = ServoPos[i];
+          ServoTarget[i+KNEE_OFFSET] = ServoPos[i+NUM_LEGS];
+          ServoTarget[i] = ServoPos[i];
         }
         break;
       case 'w':  // reset to standard standing position, resets both hips and knees
         for (int i = 0; i < NUM_LEGS; i++) {
-          KneeTarget[i] = KNEE_STAND;
-          HipTarget[i] = 90;
+          ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
+          ServoTarget[i] = 90;
         }
         break;
       case 'f': // swing hips forward, mirrored
-        HipTarget[5] = HipTarget[4] = HipTarget[3] = 125;
-        HipTarget[0] = HipTarget[1] = HipTarget[2] = 55;
+        ServoTarget[5] = ServoTarget[4] = ServoTarget[3] = 125;
+        ServoTarget[0] = ServoTarget[1] = ServoTarget[2] = 55;
         break;
       case 'b': // move the knees back up to standing position, leave hips alone
-        HipTarget[5] = HipTarget[4] = HipTarget[3] = 55;
-        HipTarget[0] = HipTarget[1] = HipTarget[2] = 125;
+        ServoTarget[5] = ServoTarget[4] = ServoTarget[3] = 55;
+        ServoTarget[0] = ServoTarget[1] = ServoTarget[2] = 125;
         break;
       case 'l':
         for (int i = 0; i < NUM_LEGS; i++) {
-          HipTarget[i] = 170;
+          ServoTarget[i] = 170;
         }
         break;
       case 'r':
         for (int i = 0; i < NUM_LEGS; i++) {
-          HipTarget[i] = 10;
+          ServoTarget[i] = 10;
         }
         break;
     }
@@ -818,58 +748,58 @@ void fight_mode(char dpad, int mode, long timeperiod) {
       case 's': 
         // do nothing in stop mode, just hold current position
         for (int i = 0; i < NUM_LEGS; i++) {
-          KneeTarget[i] = ServoPos[i+NUM_LEGS];
-          HipTarget[i] = ServoPos[i];
+          ServoTarget[i+KNEE_OFFSET] = ServoPos[i+NUM_LEGS];
+          ServoTarget[i] = ServoPos[i];
         }
         break;
       case 'w':  // reset to standard standing position, resets both hips and knees
         for (int i = 0; i < NUM_LEGS; i++) {
-          KneeTarget[i] = KNEE_STAND;
-          HipTarget[i] = 90;
+          ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
+          ServoTarget[i] = 90;
         }
         break;
       case 'f': // move knees into forward crouch, leave hips alone
 
         if (ServoPos[8] == KNEE_STAND) { // the back legs are standing, so crouch the front legs
-          KneeTarget[0]=KneeTarget[5]=KNEE_CROUCH;
-          KneeTarget[1]=KneeTarget[4]=KNEE_HALF_CROUCH;
-          KneeTarget[2]=KneeTarget[3]=KNEE_STAND;
+          ServoTarget[6]=ServoTarget[11]=KNEE_CROUCH;
+          ServoTarget[7]=ServoTarget[10]=KNEE_HALF_CROUCH;
+          ServoTarget[8]=ServoTarget[9]=KNEE_STAND;
         } else { // bring the back legs up first
           for (int i = 0; i < NUM_LEGS; i++) {
-            KneeTarget[i] = KNEE_STAND;
+            ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
           }
         }
         break;
       case 'b': // move back legs down so robot tips backwards
         if (ServoPos[6] == KNEE_STAND) { // move the back legs down
-          KneeTarget[0]=KneeTarget[5]=KNEE_STAND;
-          KneeTarget[1]=KneeTarget[4]=KNEE_HALF_CROUCH;
-          KneeTarget[2]=KneeTarget[3]=KNEE_CROUCH;
+          ServoTarget[6]=ServoTarget[11]=KNEE_STAND;
+          ServoTarget[7]=ServoTarget[10]=KNEE_HALF_CROUCH;
+          ServoTarget[8]=ServoTarget[9]=KNEE_CROUCH;
         } else { // front legs are down, return to stand first
             for (int i = 0; i < NUM_LEGS; i++) {
-              KneeTarget[i] = KNEE_STAND;
+              ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
             }
         }
         break;
      case 'l':
         if (ServoPos[9] == KNEE_STAND) {
-          KneeTarget[0]=KneeTarget[2] = KNEE_HALF_CROUCH;
-          KneeTarget[1]=KNEE_CROUCH;
-          KneeTarget[3]=KneeTarget[4]=KneeTarget[5]=KNEE_STAND;
+          ServoTarget[6]=ServoTarget[8] = KNEE_HALF_CROUCH;
+          ServoTarget[7]=KNEE_CROUCH;
+          ServoTarget[9]=ServoTarget[10]=ServoTarget[11]=KNEE_STAND;
         } else {
           for (int i = 0; i < NUM_LEGS; i++) {
-            KneeTarget[i] = KNEE_STAND;
+            ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
           }
         }
         break;
       case 'r':
         if (ServoPos[6] == KNEE_STAND) {
-          KneeTarget[0]=KneeTarget[1]=KneeTarget[2] = KNEE_STAND;
-          KneeTarget[3]=KneeTarget[5]=KNEE_HALF_CROUCH;
-          KneeTarget[4]=KNEE_CROUCH;
+          ServoTarget[6]=ServoTarget[7]=ServoTarget[8] = KNEE_STAND;
+          ServoTarget[9]=ServoTarget[11]=KNEE_HALF_CROUCH;
+          ServoTarget[10]=KNEE_CROUCH;
         } else {
           for (int i = 0; i < NUM_LEGS; i++) {
-            KneeTarget[i] = KNEE_STAND;
+            ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
           }
         }
         break;
@@ -877,54 +807,14 @@ void fight_mode(char dpad, int mode, long timeperiod) {
     }
   }
 
-  if (mode == SUBMODE_4 || mode == SUBMODE_3) { // incremental moves
-
-    // move servos toward their targets
-#define MOVEINCREMENT 10  // degrees per transmission time delay
-
-    for (int i = 0; i < NUM_LEGS; i++) {
-      int h, k;
-      h = ServoPos[i];
-      k = ServoPos[i+KNEE_OFFSET];
-      int diff = KneeTarget[i] - k;
-      
-      if (diff <= -MOVEINCREMENT) {
-        // the knee has a greater value than the target
-        k -= MOVEINCREMENT;
-      } else if (diff >= MOVEINCREMENT) {
-        // the knee has a smaller value than the target
-        k += MOVEINCREMENT;
-      } else {
-        // the knee is within MOVEINCREMENT of the target so just go to target
-        k = KneeTarget[i];
-      }
-
-      setKnee(i, k);
-
-      diff = HipTarget[i] - h;
-
-      if (diff <= -MOVEINCREMENT) {
-        // the hip has a greater value than the target
-        h -= MOVEINCREMENT;
-      } else if (diff >= MOVEINCREMENT) {
-        // the hip has a smaller value than the target
-        h += MOVEINCREMENT;
-      } else {
-        // the knee is within MOVEINCREMENT of the target so just go to target
-        h = HipTarget[i];
-      }
-        
-      setHipRaw(i, h);
-      //Serial.print("RAW "); Serial.print(i); Serial.print(" "); Serial.println(h);
-
-    }
-    return;  // /this mode does not execute the rest of the actions
+  if (mode >= SUBMODE_3) {
+    return; // we're done, the smoothmove function will take care of reaching the target positions
   }
 
-  // If we get here, we are in either submode A or B
+  // If we get here, we are in either submode 1 or 2
   //
-  // submode A: fight with two front legs, individual movement
-  // submode B: fight with two front legs, in unison
+  // submode 1: fight with two front legs, individual movement
+  // submode 2: fight with two front legs, in unison
   
   setLeg(MIDDLE_LEGS, HIP_FORWARD+10, KNEE_STAND, 0);
   setLeg(BACK_LEGS, HIP_BACKWARD, KNEE_STAND, 0);
@@ -969,7 +859,7 @@ void fight_mode(char dpad, int mode, long timeperiod) {
 #define NUM_PUGIL_PHASES 8
         {  // we need a new scope for this because there are local variables
         
-        long t = millis()%timeperiod;
+        long t = hexmillis()%timeperiod;
         long phase = (NUM_PUGIL_PHASES*t)/timeperiod;
       
         //Serial.print("PHASE: ");
@@ -1052,7 +942,7 @@ void gait_tripod(int reverse, int hipforward, int hipbackward,
 #define NUM_TRIPOD_PHASES 6
 #define FBSHIFT    15   // shift front legs back, back legs forward, this much
   
-  long t = millis()%timeperiod;
+  long t = hexmillis()%timeperiod;
   long phase = (NUM_TRIPOD_PHASES*t)/timeperiod;
 
   //Serial.print("PHASE: ");
@@ -1128,8 +1018,20 @@ void gait_tripod_scamper(int reverse, int turn) {
 #define FBSHIFT    15   // shift front legs back, back legs forward, this much
 #define SCAMPERPHASES 6
 
-#define KNEEDELAY 35   //30
-#define HIPDELAY 100   //90
+#ifdef HEXAPOD
+#define KNEEDELAY 35
+#define HIPDELAY 100
+#endif
+
+#ifdef MEGAPOD
+#define KNEEDELAY 45
+#define HIPDELAY 120
+#endif
+
+#ifdef GIGAPOD
+#define KNEEDELAY 60
+#define HIPDELAY 170
+#endif
 
   if (millis() >= NextScamperPhaseTime) {
     ScamperPhase++;
@@ -1193,16 +1095,19 @@ void gait_tripod_scamper(int reverse, int turn) {
 }
 
 // call gait_ripple with leanangle = 0
-void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod) {
-  gait_ripple(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, 0);
+void gait_ripple(int turn, int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod) {
+  gait_ripple(turn, reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, 0);
 }
 
-void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod, int leanangle) {
-  // the gait consists of 10 phases. This code determines what phase
+void gait_ripple(int turn, int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod, int leanangle) {
+  // the gait consists of 19 phases. This code determines what phase
   // we are currently in by using the millis clock modulo the 
   // desired time period that all phases should consume.
   // Right now each phase is an equal amount of time but this may not be optimal
 
+  if (turn) {
+    reverse = 1-reverse;  // yeah this is weird but if you're turning you need to reverse the sense of reverse to make left and right turns come out correctly
+  }
   if (reverse) {
     int tmp = hipforward;
     hipforward = hipbackward;
@@ -1211,7 +1116,7 @@ void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int k
 
 #define NUM_RIPPLE_PHASES 19
   
-  long t = millis()%timeperiod;
+  long t = hexmillis()%timeperiod;
   long phase = (NUM_RIPPLE_PHASES*t)/timeperiod;
 
   //Serial.print("PHASE: ");
@@ -1220,9 +1125,9 @@ void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int k
   transactServos();
   
   if (phase == 18) {
-    setLeg(ALL_LEGS, hipbackward, NOMOVE, FBSHIFT);
+    setLeg(ALL_LEGS, hipbackward, NOMOVE, FBSHIFT, turn);
   } else {
-    int leg = phase/3;  // this will be a number between 0 and 2
+    int leg = phase/3;  // this will be a number between 0 and 5 because phase==18 is handled above
     leg = 1<<leg;
     int subphase = phase%3;
 
@@ -1231,13 +1136,153 @@ void gait_ripple(int reverse, int hipforward, int hipbackward, int kneeup, int k
         setLeg(leg, NOMOVE, kneeup, 0);
         break;
       case 1:
-        setLeg(leg, hipforward, NOMOVE, FBSHIFT);
+        setLeg(leg, hipforward, NOMOVE, FBSHIFT, turn);  // move in "raw" mode if turn is engaged, this makes all legs ripple in the same direction
         break;
       case 2:
         setLeg(leg, NOMOVE, kneedown, 0);
         break;     
     }
   }
+  commitServos();
+}
+
+#define FBSHIFT_QUAD 25
+#define HIP_FORWARD_QUAD (HIP_FORWARD)
+#define HIP_BACKWARD_QUAD (HIP_BACKWARD)
+#define KNEE_QUAD_UP (KNEE_DOWN+30)
+#define KNEE_QUAD_DOWN (KNEE_DOWN)
+#define QUAD_CYCLE_TIME 600
+
+void gait_quad(int turn, int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod, int leanangle) {
+  // the gait walks using a quadruped gait with middle legs raised up. This code determines what phase
+  // we are currently in by using the millis clock modulo the 
+  // desired time period that all phases should consume.
+  // Right now each phase is an equal amount of time but this may not be optimal
+
+  if (turn) {
+    reverse = 1-reverse;  // yeah this is weird but if you're turning you need to reverse the sense of reverse to make left and right turns come out correctly
+  }
+  if (reverse) {
+    int tmp = hipforward;
+    hipforward = hipbackward;
+    hipbackward = tmp;
+  }
+
+#define NUM_QUAD_PHASES 6
+  
+  long t = hexmillis()%timeperiod;
+  long phase = (NUM_QUAD_PHASES*t)/timeperiod;
+
+  //Serial.print("PHASE: ");
+  //Serial.println(phase);
+
+  transactServos();
+  setLeg(MIDDLE_LEGS, HIP_NEUTRAL, KNEE_UP_MAX, FBSHIFT_QUAD, 0);
+  
+  switch (phase) {
+    case 0:
+      // in this phase, center-left and noncenter-right legs raise up at
+      // the knee
+      setLeg(QUAD1_LEGS, NOMOVE, kneeup, FBSHIFT_QUAD, turn);
+      // use the middle legs to try to counter balance
+      if (kneeup != kneedown) { // if not standing still
+        setLeg(MIDDLE_LEGS, reverse?HIP_BACKWARD_MAX:HIP_FORWARD_MAX, NOMOVE, 0, 1);
+      }
+      break;
+
+    case 1:
+      // in this phase, the center-left and noncenter-right legs move forward
+      // at the hips, while the rest of the legs move backward at the hip
+      setLeg(QUAD1_LEGS, hipforward, NOMOVE, FBSHIFT_QUAD, turn);
+      setLeg(QUAD2_LEGS, hipbackward, NOMOVE, FBSHIFT_QUAD, turn);
+      break;
+
+    case 2: 
+      // now put the first set of legs back down on the ground
+      setLeg(QUAD1_LEGS, NOMOVE, kneedown, 0, turn);
+      break;
+
+    case 3:
+      // lift up the other set of legs at the knee
+      setLeg(QUAD2_LEGS, NOMOVE, kneeup, 0, turn);
+      if (kneeup != kneedown) {
+         setLeg(MIDDLE_LEGS, reverse?HIP_FORWARD_MAX:HIP_BACKWARD_MAX, NOMOVE, 0, 1);
+      }
+      break;
+      
+    case 4:
+      // similar to phase 1, move raised legs forward and lowered legs backward
+      setLeg(QUAD1_LEGS, hipbackward, NOMOVE, FBSHIFT_QUAD, turn);
+      setLeg(QUAD2_LEGS, hipforward, NOMOVE, FBSHIFT_QUAD, turn);
+      break;
+
+    case 5:
+      // put the second set of legs down, and the cycle repeats
+      setLeg(QUAD2_LEGS, NOMOVE, kneedown, 0, turn);
+      break;  
+  }
+  commitServos();
+}
+
+
+#define FBSHIFT_BELLY 55
+#define HIP_FORWARD_BELLY (HIP_FORWARD+10)
+#define HIP_BACKWARD_BELLY (HIP_BACKWARD-10)
+#define KNEE_BELLY_UP (KNEE_NEUTRAL-30)
+#define KNEE_BELLY_DOWN (KNEE_NEUTRAL+30)
+#define BELLY_CYCLE_TIME 600
+
+void gait_belly(int turn, int reverse, int hipforward, int hipbackward, int kneeup, int kneedown, long timeperiod, int leanangle) {
+  // the gait walks using a rowboat motion while the robot rests on its belly between steps. This code determines what phase
+  // we are currently in by using the millis clock modulo the 
+  // desired time period that all phases should consume.
+  // Right now each phase is an equal amount of time but this may not be optimal
+
+  if (turn) {
+    reverse = 1-reverse;  // yeah this is weird but if you're turning you need to reverse the sense of reverse to make left and right turns come out correctly
+  }
+  if (reverse) {
+    int tmp = hipforward;
+    hipforward = hipbackward;
+    hipbackward = tmp;
+  }
+
+#define NUM_BELLY_PHASES 4
+  
+  long t = hexmillis()%timeperiod;
+  long phase = (NUM_BELLY_PHASES*t)/timeperiod;
+
+  //Serial.print("PHASE: ");
+  //Serial.println(phase);
+
+  transactServos();
+
+  switch (phase) {
+    case 0: // lie down with legs out to the sides
+      setLeg(ALL_LEGS, NOMOVE, kneeup, FBSHIFT_BELLY, turn);
+      break;
+    case 1:
+      if (turn) {
+        for (int i = 0; i < NUM_LEGS; i++) {
+          setHipRawAdj(i, hipbackward, FBSHIFT_BELLY);
+        }
+      } else {
+        setLeg(ALL_LEGS, hipbackward, NOMOVE, FBSHIFT_BELLY, turn);
+      }
+      break;
+    case 2:
+      setLeg(ALL_LEGS, NOMOVE, kneedown, FBSHIFT_BELLY, turn);
+      break;
+    case 3:
+      if (turn) {
+          for (int i = 0; i < NUM_LEGS; i++) {
+            setHipRawAdj(i, hipforward, FBSHIFT_BELLY);
+          }
+      } else {
+        setLeg(ALL_LEGS, hipforward, NOMOVE, FBSHIFT_BELLY, turn);
+      }
+      break;  
+  } 
   commitServos();
 }
 
@@ -1310,9 +1355,7 @@ void random_gait(int timingfactor) {
     case G_BALLET:
       flutter();
       break;
-      
-  }
-  
+  } 
 }
 
 void foldup() {
@@ -1324,7 +1367,7 @@ void foldup() {
 void dance_dab(int timingfactor) {
 #define NUM_DAB_PHASES 3
   
-  long t = millis()%(1100*timingfactor);
+  long t = hexmillis()%(1100*timingfactor);
   long phase = (NUM_DAB_PHASES*t)/(1100*timingfactor);
 
   switch (phase) {
@@ -1347,7 +1390,7 @@ void flutter() {   // ballet flutter legs on pointe
 #define FLUTTER_TIME 200
 #define KNEE_FLUTTER (KNEE_TIPTOES+20)
 
-  long t = millis()%(FLUTTER_TIME);
+  long t = hexmillis()%(FLUTTER_TIME);
   long phase = (NUM_FLUTTER_PHASES*t)/(FLUTTER_TIME);
 
   setLeg(ALL_LEGS, HIP_NEUTRAL, NOMOVE, 0, 0);
@@ -1433,7 +1476,7 @@ void dance_hands(int dpad) {
 #define HANDS_TIME_PERIOD 400
         {  // we need a new scope for this because there are local variables
         
-        long t = millis()%HANDS_TIME_PERIOD;
+        long t = hexmillis()%HANDS_TIME_PERIOD;
         long phase = (NUM_HANDS_PHASES*t)/HANDS_TIME_PERIOD;
      
     
@@ -1462,7 +1505,7 @@ void dance(int legs_up, int submode, int timingfactor) {
 
 #define NUM_DANCE_PHASES 2
   
-  long t = millis()%(600*timingfactor);
+  long t = hexmillis()%(600*timingfactor);
   long phase = (NUM_DANCE_PHASES*t)/(600*timingfactor);
 
   switch (phase) {
@@ -1485,7 +1528,7 @@ void boogie_woogie(int legs_flat, int submode, int timingfactor) {
 
 #define NUM_BOOGIE_PHASES 2
   
-  long t = millis()%(400*timingfactor);
+  long t = hexmillis()%(400*timingfactor);
   long phase = (NUM_BOOGIE_PHASES*t)/(400*timingfactor);
 
   switch (phase) {
@@ -1620,8 +1663,26 @@ void setup() {
 // It handles trims too.
 
 byte deferServoSet = 0;
+int servoOffset = 0; // be very careful when using this. It redefines the front of the robot.
 
-void setServo(int servonum, int position) {
+void setServo(int servonum, unsigned int position) {
+  servonum = constrain(servonum,0,15);
+  position = constrain(position,0,180);
+
+  if (servonum < 12 && servoOffset != 0) { // we don't want this to effect accessory servos like the grip arm
+
+    // the offset can be used to define a new "front" of the robot
+    // Always be sure to reset servoOffset to 0 after making your servo moves
+    // shift both the hips and legs independently in cycles 6 long
+    int tmp = ((servonum + servoOffset)%6); 
+    if (servonum>5) { // if it was a hip, make it still be a hip (the mod 6 above would have made it too low)
+      tmp += 6;   
+    }
+    //Serial.print(servonum); Serial.print("=map="); Serial.println(tmp);
+    servonum = constrain(tmp, 0, 11);
+
+  }
+  
   if (position != ServoPos[servonum]) {
     ServoTime[servonum] = millis();
   }
@@ -1650,9 +1711,12 @@ void transactServos() {
 void commitServos() {
   checkForCrashingHips();
   deferServoSet = 0;
+  int tmp = servoOffset;
+  servoOffset = 0;  // want true servo positions not virtual
   for (int servo = 0; servo < 2*NUM_LEGS+NUM_GRIPSERVOS; servo++) {
     setServo(servo, ServoPos[servo]);
   }
+  servoOffset = tmp; // put it back
 }
 
 // checkForCrashingHips takes a look at the leg angles and tries to figure out if the commanded
@@ -1664,7 +1728,9 @@ void commitServos() {
 // draw much power (the current draw is proportional to how far off the mark the servo is).
 
 void checkForCrashingHips() {
-  
+
+  int tmp = servoOffset;
+  servoOffset = 0; // we want this to operate on actaul servo numbers not remapped numbers
   for (int leg = 0; leg < NUM_LEGS; leg++) {
     if (ServoPos[leg] > 85) {
       continue; // it's not possible to crash into the next leg in line unless the angle is 85 or less
@@ -1697,6 +1763,7 @@ void checkForCrashingHips() {
     setServo(nextleg, ServoPos[nextleg] - adjust);
 
   }
+  servoOffset = tmp;
 }
 
 #define ULTRAOUTPUTPIN 7      // TRIG
@@ -1807,7 +1874,7 @@ int receiveDataHandler() {
   while (BlueTooth.available() > 0) {
     unsigned int c = BlueTooth.read();
 
-    // uncomment the following lines if you're doing some serious packet debugging, but be aware this will take up so
+    // uncomment the following lines (by making it: #if 1 )if you're doing some serious packet debugging, but be aware this will take up so
     // much time you will drop some data. I would suggest slowing the gamepad/scratch sending rate to 4 packets per
     // second or slower if you want to use this.
 #if 0
@@ -1925,7 +1992,7 @@ Serial.println("");
              // button and mode, such as: @W2f means walk mode two forward. As such, there is no
              // checksum, but we can be pretty sure it's valid because there are strong limits on what
              // each letter can be. The following large conditional tests these constraints
-             if ( (packetData[0] != 'W' && packetData[0] != 'D' && packetData[0] != 'F') ||
+             if ( (packetData[0] != 'W' && packetData[0] != 'D' && packetData[0] != 'F' && packetData[0] != 'X' && packetData[0] != 'Y' && packetData[0] != 'Z') ||
                     (packetData[1] != '1' && packetData[1] != '2' && packetData[1] != '3' && packetData[1] != '4') ||
                     (packetData[2] != 'f' && packetData[2] != 'b' && packetData[2] != 'l' && packetData[2] != 'r' && 
                        packetData[2] != 'w' && packetData[2] != 's')) {
@@ -1970,10 +2037,10 @@ void gait_command(int gaittype, int reverse, int hipforward, int hipbackward, in
                    turn(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, leanangle);
                    break;
         case 2:
-                   gait_ripple(reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, leanangle);
+                   gait_ripple(0, reverse, hipforward, hipbackward, kneeup, kneedown, timeperiod, leanangle);
                    break;
         case 3:
-                   gait_sidestep(reverse, timeperiod);
+                   //gait_sidestep(reverse, timeperiod);
                    break;
        }
 
@@ -2001,9 +2068,27 @@ void processPacketData() {
       case 'W': 
       case 'F':
       case 'D':
+      case 'X':
+      case 'Y':
+      case 'Z':
         // gamepad mode change
         if (i <= packetLengthReceived - 3) {
 
+          if ( mode != packetData[i] || submode != packetData[i+1] ) {
+            // POSITION SAFETY CODE
+            // on any mode/submode change go into stand mode for a short time to ensure legs are all on the ground
+            // However, we make an exception going into fight2 (Z) submode 2,3,4 and fight 1 (F) modes 3,4
+            if ( (packetData[i] != 'Z' && (packetData[i] != 'F')) || 
+                (packetData[i] == 'Z' && mode != 'Z' && mode != 'F') || 
+                (packetData[i] == 'F' && mode != 'Z' && mode != 'F')) {
+              stand();
+#ifdef GIGAPOD
+              delay(250);
+#else
+              delay(120);
+#endif
+            }
+          }
           mode = packetData[i];
           submode = packetData[i+1];
           lastCmd = packetData[i+2];
@@ -2026,7 +2111,7 @@ void processPacketData() {
             // eventually we should queue beeps so scratch can issue multiple tones
             // to be played over time.
             if (honkfreq > 0 && honkdur > 0) {
-              Serial.println("Beep Command");
+              Serial.println("#Beep");
               beep(honkfreq, honkdur);    
             }  
             i += 5; // length of beep command is 5 bytes
@@ -2303,7 +2388,7 @@ void processPacketData() {
         //////////////// TEMPORARY CODE ////////////////////
         // chirp at most once per second if sending sensor data, this is helpful for debugging
         if (0) {
-          unsigned long t = millis()%1000;
+          unsigned long t = hexmillis()%1000; // do not use hexmillis here
           if (t < 110) {
             beep(2000,20);
           }
@@ -2319,12 +2404,728 @@ void processPacketData() {
   }
 }
 
+byte FrontReverse = 0;
+long DebounceFrontReverse = 0;
+
+void walk2(int cmd, int submode) {
+
+  switch (submode) {   
+    case '1': // RIPPLE GAIT
+
+      switch (cmd) {
+      case 'f':
+        gait_ripple(0, 0, HIP_FORWARD_RIPPLE, HIP_BACKWARD_RIPPLE, KNEE_RIPPLE_UP, KNEE_RIPPLE_DOWN, RIPPLE_CYCLE_TIME, 0);
+        break;
+      case 'b':
+        gait_ripple(0, 1, HIP_FORWARD_RIPPLE, HIP_BACKWARD_RIPPLE, KNEE_RIPPLE_UP, KNEE_RIPPLE_DOWN, RIPPLE_CYCLE_TIME, 0);
+        break;
+      case 'l':
+        gait_ripple(1, 0, HIP_FORWARD_RIPPLE, HIP_BACKWARD_RIPPLE, KNEE_RIPPLE_UP, KNEE_RIPPLE_DOWN, RIPPLE_CYCLE_TIME, 0);
+        break;
+      case 'r':
+        gait_ripple(1, 1, HIP_FORWARD_RIPPLE, HIP_BACKWARD_RIPPLE, KNEE_RIPPLE_UP, KNEE_RIPPLE_DOWN, RIPPLE_CYCLE_TIME, 0);
+        break;
+      case 's':
+        stand();
+        break;
+      case 'w':
+        beep(400);
+        gait_ripple(0, 0, HIP_NEUTRAL, HIP_NEUTRAL, KNEE_RIPPLE_UP, KNEE_RIPPLE_DOWN, RIPPLE_CYCLE_TIME, 0);
+        break;
+      }
+      break;
+      
+    case '2': //BELLY CRAWL GAIT
+      switch (cmd) {
+      case 'f':
+        gait_belly(0, 0, HIP_FORWARD_BELLY, HIP_BACKWARD_BELLY, KNEE_BELLY_UP, KNEE_BELLY_DOWN, BELLY_CYCLE_TIME, 0);
+        break;
+      case 'b':
+        gait_belly(0, 1, HIP_FORWARD_BELLY, HIP_BACKWARD_BELLY, KNEE_BELLY_UP, KNEE_BELLY_DOWN, BELLY_CYCLE_TIME, 0);
+        break;
+      case 'l':
+        gait_belly(1, 0, HIP_FORWARD_BELLY, HIP_BACKWARD_BELLY, KNEE_BELLY_UP, KNEE_BELLY_DOWN, BELLY_CYCLE_TIME, 0);
+        break;
+      case 'r':
+        gait_belly(1, 1, HIP_FORWARD_BELLY, HIP_BACKWARD_BELLY, KNEE_BELLY_UP, KNEE_BELLY_DOWN, BELLY_CYCLE_TIME, 0);
+        break;
+      case 'w':
+        // stomp in place
+        beep(300);
+        gait_belly(0, 0, HIP_NEUTRAL, HIP_NEUTRAL, KNEE_BELLY_UP, KNEE_BELLY_DOWN, BELLY_CYCLE_TIME, 0);
+        break;
+      case 's':
+        setLeg(ALL_LEGS, HIP_NEUTRAL, 85, FBSHIFT_BELLY, 0);
+        break;
+      }
+      break;
+
+    case '3':  // Quadruped Gait
+    
+      switch (cmd) {
+      case 'f':
+        gait_quad(0, 0, HIP_FORWARD_QUAD, HIP_BACKWARD_QUAD, KNEE_QUAD_UP, KNEE_QUAD_DOWN, QUAD_CYCLE_TIME, 0);
+        break;
+      case 'b':
+        gait_quad(0, 1, HIP_FORWARD_QUAD, HIP_BACKWARD_QUAD, KNEE_QUAD_UP, KNEE_QUAD_DOWN, QUAD_CYCLE_TIME, 0);
+        break;
+      case 'l':
+        gait_quad(1, 0, HIP_FORWARD_QUAD, HIP_BACKWARD_QUAD, KNEE_QUAD_UP, KNEE_QUAD_DOWN, QUAD_CYCLE_TIME, 0);
+        break;
+      case 'r':
+        gait_quad(1, 1, HIP_FORWARD_QUAD, HIP_BACKWARD_QUAD, KNEE_QUAD_UP, KNEE_QUAD_DOWN, QUAD_CYCLE_TIME, 0);
+        break;
+      case 'w': // stomp and honk
+        beep(500);
+        gait_quad(1, 1, HIP_NEUTRAL, HIP_NEUTRAL, KNEE_QUAD_UP, KNEE_QUAD_DOWN, QUAD_CYCLE_TIME, 0);
+        break;
+      case 's':
+        gait_quad(1, 1, HIP_NEUTRAL, HIP_NEUTRAL, KNEE_QUAD_DOWN, KNEE_QUAD_DOWN, QUAD_CYCLE_TIME, 0);
+        break;
+      }
+      break;
+    
+    case '4': // redefine front gait while scampering
+        
+      switch (cmd) {
+      case 'f':
+        servoOffset = FrontReverse;
+        gait_tripod_scamper(0,0);
+        servoOffset = 0;
+        break;
+      case 'b':
+         servoOffset = FrontReverse;
+         gait_tripod_scamper(1, 0);
+         servoOffset = 0;
+        break;
+      case 'l':
+        servoOffset=1+FrontReverse;
+        gait_tripod_scamper(0,0);
+        servoOffset=0;
+        break;
+      case 'r':
+        servoOffset=5+FrontReverse;
+        gait_tripod_scamper(0,0);
+        servoOffset=0;
+        break;
+      case 'w': // reverse entire sense of the robot legs 180 degrees
+         {
+            long now = millis(); // do NOT use hexmillis here, we want realtime for debounce type operations
+            if (now > DebounceFrontReverse) {
+              FrontReverse = 3 - FrontReverse; // it will toggle between 3 and 0
+              beep(500+300*FrontReverse,50); //feedback to user: high pitch means reversed, low pitch means back to normal
+              DebounceFrontReverse = now+300;
+            }   
+         }   
+        break;
+      case 's':
+        stand();
+        break;
+      }
+      break;
+  }
+}
+
+#define MODETWITCH 0
+#define MODESWAY 1
+
+void dance_twitch(int cmd, int hipforward, int hipbackward, int kneeup, int kneedown, int twitchmode) {
+  // Dance by twitching legs. This code determines what phase
+  // we are currently in by using the millis clock modulo the 
+  // desired time period that all phases should consume.
+
+#define NUM_TWITCH_PHASES 4
+#define TWITCH_TIME 300
+  int ttime = TWITCH_TIME;
+
+  if (twitchmode == MODESWAY) {
+    ttime = 750;
+  }
+  long t = hexmillis()%ttime;
+  long phase = (NUM_TWITCH_PHASES*t)/ttime;
+
+  //Serial.print("PHASE: ");
+  //Serial.println(phase);
+  int legs = ALL_LEGS;
+
+  int revlr = 0;
+  
+  switch (cmd) {
+    case 'f':
+       legs = ALL_LEGS; break;
+    case 'l':
+       legs = LEFT_LEGS; break;
+    case 'b':
+       legs = ALL_LEGS;
+       revlr = 1;
+       break;
+    case 'r':
+       legs = RIGHT_LEGS; break;
+  }
+
+  transactServos();
+  if (twitchmode == MODETWITCH) {
+    setLeg(ALL_LEGS, HIP_NEUTRAL, KNEE_TIPTOES, TWITCH_ADJ);
+  } else {
+    setLeg(ALL_LEGS, HIP_NEUTRAL, (KNEE_TIPTOES+KNEE_DOWN)/2, TWITCH_ADJ);
+    switch (cmd) {
+      case 'f':
+        // hands alternate from knee_neutral to knee_up_max at same time
+        setLeg(MIDDLE_LEGS, NOMOVE, KNEE_NEUTRAL, TWITCH_ADJ); break;
+      case 'b':
+        // no hands at all, all legs down
+        break;
+      case 'l':
+        // hands sway in opposite direction of  grounded legs
+        setLeg(MIDDLE_LEGS, NOMOVE, KNEE_UP, TWITCH_ADJ);
+        break;
+      case 'r':
+        // hands pivot at the hips
+        setLeg(MIDDLE_LEGS, NOMOVE, KNEE_UP_MAX, TWITCH_ADJ, 1);
+        break;
+      case 'w':
+         // sway both back and forth and with hip swings      
+         break;
+    }
+  }
+  
+  switch (phase) {
+    case 0:
+      if (twitchmode == MODETWITCH) {
+        setLeg(legs, hipforward, kneeup, TWITCH_ADJ);
+        if (revlr) {
+          setLeg(LEFT_LEGS, hipbackward, kneeup, TWITCH_ADJ);
+        }
+      } else { //sway
+        setLeg(LEFT_LEGS, HIP_NEUTRAL, kneeup, TWITCH_ADJ);
+        setLeg(RIGHT_LEGS, HIP_NEUTRAL, kneedown, TWITCH_ADJ);
+        switch (cmd) {
+          case 'f':
+            setLeg(MIDDLE_LEGS, NOMOVE, KNEE_UP_MAX, TWITCH_ADJ); 
+            break;
+          case 'b':
+            break;
+          case 'l':
+            setLeg(LEG1, NOMOVE, KNEE_NEUTRAL, TWITCH_ADJ);
+            setLeg(LEG4, NOMOVE, KNEE_UP_MAX, TWITCH_ADJ);
+            break;
+          case 'r':
+            setLeg(MIDDLE_LEGS, HIP_FORWARD, KNEE_UP_MAX, TWITCH_ADJ);
+            break;
+          case 'w':
+            setLeg(RIGHT_LEGS, HIP_FORWARD_MAX, kneedown, TWITCH_ADJ);
+            break;
+        }
+      }
+      break;
+
+    case 1: break;
+
+    case 2:
+      if (twitchmode == MODETWITCH) {
+        setLeg(legs, hipbackward, kneedown, TWITCH_ADJ);
+        if (revlr) {
+          setLeg(LEFT_LEGS, hipforward, kneeup, TWITCH_ADJ);
+        }
+      } else { //sway
+        setLeg(LEFT_LEGS, hipforward, kneedown, TWITCH_ADJ);
+        setLeg(RIGHT_LEGS, hipforward, kneeup, TWITCH_ADJ);
+        switch (cmd) {
+          case 'f':
+            setLeg(MIDDLE_LEGS, NOMOVE, KNEE_UP, TWITCH_ADJ); break;
+          case 'b':
+            break;
+          case 'l':
+            setLeg(LEG1, NOMOVE, KNEE_UP_MAX, TWITCH_ADJ);
+            setLeg(LEG4, NOMOVE, KNEE_NEUTRAL, TWITCH_ADJ);
+            break;
+          case 'r':
+            setLeg(MIDDLE_LEGS, HIP_BACKWARD, KNEE_UP_MAX, TWITCH_ADJ, 1);
+            break;
+          case 'w':
+            setLeg(LEFT_LEGS, HIP_FORWARD_MAX, kneedown, TWITCH_ADJ);
+            break;
+        }
+      }
+
+      break;
+
+    case 3: break;
+
+  }
+  commitServos();
+  
+}
+
+void randomizeLeg(int legnum) {
+  int hip = ServoPos[legnum];
+#define RANDMAX 20
+
+  hip += random(-RANDMAX,RANDMAX);
+  hip = constrain(hip, HIP_BACKWARD, HIP_FORWARD);
+  setHipRaw(legnum, hip);
+  
+  int knee = ServoPos[legnum+KNEE_OFFSET];
+  knee += random(-RANDMAX, RANDMAX);
+  knee = constrain(knee, KNEE_NEUTRAL-10, KNEE_UP_MAX);
+  setKnee(legnum, knee);
+  
+}
+
+void dance_brownian(int cmd) {
+  //randomSeed(millis());
+
+  switch(cmd) {
+    case 'f':
+      randomizeLeg(0);
+      randomizeLeg(5);
+      break;
+      
+    case 'b':
+      randomizeLeg(2);
+      randomizeLeg(3);
+      break;
+      
+    case 'l':
+      for (int i = 0; i < 3; i++) {
+          randomizeLeg(i);
+      }
+      break;
+      
+    case 'r':
+      for (int i = 3; i < 6; i++) {
+          randomizeLeg(i);
+      }
+      break;
+      
+    case 'w':
+      for (int i = 0; i < 6; i++) {
+          randomizeLeg(i);
+      }
+      break;
+      
+    case 's':
+      setLeg(ALL_LEGS, NOMOVE, KNEE_NEUTRAL, 0, 1);
+      return;
+  }
+}
+
+void dance_star(int cmd) {
+  // Dance by making star patterns with legs
+
+#define NUM_STAR_PHASES 4
+#define STAR_TIME 700
+
+  long t = hexmillis()%STAR_TIME;
+  long phase = (NUM_STAR_PHASES*t)/STAR_TIME;
+
+  //Serial.print("PHASE: ");  Serial.println(phase);
+  int kneeposleft = KNEE_STAND;
+  int kneeposright = KNEE_STAND;
+  byte sidebyside = 0;
+  
+  switch (cmd) {
+    case 'f':
+       kneeposleft = kneeposright = KNEE_DOWN; 
+       break;
+       
+    case 'b':
+       kneeposleft = kneeposright = KNEE_UP_MAX;
+       break;
+       
+    case 'l':
+      kneeposleft = KNEE_DOWN;
+      kneeposright = KNEE_NEUTRAL;
+      break;
+      
+    case 'r':
+      kneeposleft = KNEE_NEUTRAL;
+      kneeposright = KNEE_DOWN;
+      break;
+      
+    case 'w':
+      kneeposleft = KNEE_UP;
+      kneeposright = KNEE_DOWN;
+      break;
+      
+    case 's':
+      setLeg(ALL_LEGS, HIP_NEUTRAL, KNEE_DOWN, 0, 1);
+      return;
+  }
+
+  transactServos();
+
+  setLeg(ALL_LEGS, HIP_NEUTRAL, (kneeposleft+kneeposright)/2, 0, 1);
+  
+  switch (phase) {
+    case 0:
+      setLeg(TRIPOD1_LEGS, HIP_FORWARD+5, kneeposleft+20, 0, 1);
+      setLeg(TRIPOD2_LEGS, HIP_BACKWARD-5, kneeposright-10, 0, 1);
+      if (sidebyside) {
+        setLeg(LEFT_LEGS, NOMOVE, KNEE_UP, 0, 1);
+      }
+      break;
+
+    case 1: break;
+
+    case 2:
+      setLeg(TRIPOD2_LEGS, HIP_FORWARD+5, kneeposright+20, 0, 1);
+      setLeg(TRIPOD1_LEGS, HIP_BACKWARD-5, kneeposleft-10, 0, 1);
+      if (sidebyside) {
+        setLeg(RIGHT_LEGS, NOMOVE, KNEE_UP, 0, 1);
+      }
+      break;
+
+    case 3: break;
+
+  }
+  commitServos();
+  
+}
+
+void dance2(int cmd, int submode) {
+  switch (submode) {
+    
+    case SUBMODE_1: // TWITCH DANCE
+
+      switch (cmd) {
+      case 'f':
+        dance_twitch(cmd, HIP_FORWARD_RIPPLE, HIP_BACKWARD_RIPPLE, NOMOVE, NOMOVE, MODETWITCH);
+        break;
+      case 'b':
+        dance_twitch(cmd, HIP_FORWARD_RIPPLE, HIP_BACKWARD_RIPPLE, NOMOVE, NOMOVE, MODETWITCH);
+        break;
+      case 'l':
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_DOWN, MODETWITCH);
+        break;
+      case 'r':
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_DOWN, MODETWITCH);
+        break;
+      case 'w': // special
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_DOWN, MODETWITCH);
+        break;
+      case 's': // stop mode, just stand tall in twitch configuration
+        setLeg(ALL_LEGS, HIP_NEUTRAL, KNEE_TIPTOES, TWITCH_ADJ);
+        break;
+      }
+      break;
+      
+    case SUBMODE_2: // SWAY DANCE
+    
+      switch (cmd) {
+      case 'f':
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_NEUTRAL, MODESWAY);
+        break;
+      case 'b':
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_NEUTRAL, MODESWAY);
+        break;
+      case 'l':
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_NEUTRAL, MODESWAY);
+        break;
+      case 'r':
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_NEUTRAL, MODESWAY);
+        break;
+      case 'w': // special
+        dance_twitch(cmd, NOMOVE, NOMOVE, KNEE_TIPTOES, KNEE_NEUTRAL, MODESWAY);
+        break;
+      case 's': // stop mode, just stand tall in twitch configuration
+        setLeg(ALL_LEGS, HIP_NEUTRAL, KNEE_TIPTOES, TWITCH_ADJ);
+        break;
+      }
+      break;
+
+
+    case SUBMODE_3:  // STAR DANCE
+      dance_star(cmd);
+      break;
+    
+    case SUBMODE_4:
+      dance_brownian(cmd);
+      break;
+  }
+}
+
+void corgi(int begmode) {
+
+#define NUM_DOGBEG_PHASES 4
+#define DOGBEG_TIME 350
+  
+  long t = hexmillis()%DOGBEG_TIME;
+  long phase = (NUM_DOGBEG_PHASES*t)/DOGBEG_TIME;
+
+  //Serial.print("PHASE: ");
+  //Serial.println(phase);
+
+  transactServos();
+  setLeg(BACK_LEGS, HIP_BACKWARD, KNEE_UP, 0);
+  setLeg(MIDDLE_LEGS, HIP_FORWARD, KNEE_TIPTOES, 0);
+  
+  if (begmode == 's') { // just standing here, nothing to do
+    commitServos();
+    return;
+  }
+  
+  switch (phase) {
+    case 0:
+      switch (begmode) {
+        case 'f': // beg for food
+          setLeg(LEG0, HIP_FORWARD, KNEE_DOWN, 0);
+          setLeg(LEG5, HIP_FORWARD, KNEE_UP, 0);
+          break;
+        case 'b': // clap
+          setLeg(LEG0, HIP_FORWARD+30, KNEE_UP, 0);
+          setLeg(LEG5, HIP_FORWARD+30, KNEE_UP, 0);
+          break;
+        case 'w': // sway
+          setLeg(LEG0, HIP_FORWARD+30, KNEE_UP, 0);
+          setLeg(LEG5, HIP_FORWARD-30, KNEE_UP, 0);
+          break;
+        case 'l':
+          setLeg(LEG0, HIP_FORWARD, KNEE_UP_MAX, 0); // queen's wave, side to side
+          setLeg(LEG5, HIP_FORWARD, KNEE_DOWN, 0);
+          break;
+        case 'r':
+          setLeg(LEG5, HIP_FORWARD, KNEE_UP_MAX, 0);  // normal wave, up and down
+          setLeg(LEG0, HIP_FORWARD, KNEE_DOWN, 0);
+          break;
+      }
+    case 1: break;
+
+    case 2:
+       switch (begmode) {
+        case 'f':
+          setLeg(LEG0, HIP_FORWARD, KNEE_UP, 0);
+          setLeg(LEG5, HIP_FORWARD, KNEE_DOWN, 0);
+          break;
+        case 'b':
+        case 'w':
+          setLeg(LEG0, HIP_FORWARD, KNEE_UP, 0);
+          setLeg(LEG5, HIP_FORWARD, KNEE_UP, 0);
+          break;
+        case 'r':
+          setLeg(LEG5, HIP_FORWARD, KNEE_UP, 0);
+          break;
+        case 'l':
+          setLeg(LEG0, HIP_NEUTRAL, KNEE_UP_MAX, 0);
+          break;
+      }
+
+      break;
+
+    case 3: break;
+
+  }
+  commitServos();
+  
+}
+
+void wave_hello(int cmd) {
+
+#define NUM_HELLO_PHASES 4
+#define HELLO_TIME 300
+  
+  long t = hexmillis()%HELLO_TIME;
+  long phase = (NUM_HELLO_PHASES*t)/HELLO_TIME;
+
+  //Serial.print("PHASE: ");
+  //Serial.println(phase);
+
+  transactServos();
+  setLeg(ALL_LEGS&(~LEG5), HIP_NEUTRAL, KNEE_STAND, 0); // every leg except leg 5
+  
+  switch (phase) {
+    case 0:
+      if (cmd == 'r') {
+        setLeg(LEG5, HIP_FORWARD, KNEE_UP_MAX, 0);  // normal wave, up and down
+      } else {
+        setLeg(LEG5, HIP_FORWARD, KNEE_UP_MAX, 0); // queen's wave, side to side
+      }
+    case 1: break;
+
+    case 2:
+      if (cmd == 'r') {
+        setLeg(LEG5, HIP_FORWARD, KNEE_UP, 0);
+      } else {
+        setLeg(LEG5, HIP_NEUTRAL, KNEE_UP_MAX, 0);
+      }
+      break;
+
+    case 3: break;
+
+  }
+  commitServos();
+  
+  
+}
+
+void incremental_move() {
+
+  return;
+      // move servos toward their targets
+#define MOVEINCREMENT 10  // degrees per transmission time delay
+
+  for (int i = 0; i < NUM_LEGS; i++) {
+    int h, k;
+    h = ServoPos[i];
+    k = ServoPos[i+KNEE_OFFSET];
+    int diff = ServoTarget[i+KNEE_OFFSET] - k;
+    
+    if (diff <= -MOVEINCREMENT) {
+      // the knee has a greater value than the target
+      k -= MOVEINCREMENT;
+    } else if (diff >= MOVEINCREMENT) {
+      // the knee has a smaller value than the target
+      k += MOVEINCREMENT;
+    } else {
+      // the knee is within MOVEINCREMENT of the target so just go to target
+      k = ServoTarget[i+KNEE_OFFSET];
+    }
+
+    setKnee(i, k);
+
+    diff = ServoTarget[i] - h;
+
+    if (diff <= -MOVEINCREMENT) {
+      // the hip has a greater value than the target
+      h -= MOVEINCREMENT;
+    } else if (diff >= MOVEINCREMENT) {
+      // the hip has a smaller value than the target
+      h += MOVEINCREMENT;
+    } else {
+      // the knee is within MOVEINCREMENT of the target so just go to target
+      h = ServoTarget[i];
+    }
+      
+    setHipRaw(i, h);
+    //Serial.print("RAW "); Serial.print(i); Serial.print(" "); Serial.println(h);
+
+  }
+  return;  // /this mode does not execute the rest of the actions
+}
+
+void fight2(int cmd, int submode) {
+  //Serial.print("F2="); Serial.write(cmd); Serial.write(submode); Serial.println("");
+
+   switch (submode) {
+    
+    case SUBMODE_1: // Corgi Mode
+      corgi(cmd);
+      break;
+      
+    case SUBMODE_2: // single arm manipulator mode, right front arm
+    switch (cmd) {
+      case 's': 
+        // do nothing in stop mode, just hold current position
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i+KNEE_OFFSET] = ServoPos[i+NUM_LEGS];
+          ServoTarget[i] = ServoPos[i];
+        }
+        break;
+      case 'w':  // reset to standard standing position, resets both hips and knees
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
+          ServoTarget[i] = 90;
+        }
+        break;
+      case 'f': 
+          ServoTarget[5+KNEE_OFFSET] = 180;
+        break;
+      case 'b':
+          ServoTarget[5+KNEE_OFFSET] = 0;
+        break;
+      case 'l':
+          ServoTarget[5] = 0;
+        break;
+      case 'r':
+          ServoTarget[5] = 180;
+        break;
+      }
+      break; // end of submode 2
+
+
+    case SUBMODE_3:  // single arm manipulator mode, left front arm
+      switch (cmd) {
+      case 's': 
+        // do nothing in stop mode, just hold current position
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i+KNEE_OFFSET] = ServoPos[i+NUM_LEGS];
+          ServoTarget[i] = ServoPos[i];
+        }
+        break;
+      case 'w':  // reset to standard standing position, resets both hips and knees
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
+          ServoTarget[i] = 90;
+        }
+        break;
+      case 'f': // raise leg 0
+          ServoTarget[0+KNEE_OFFSET] = 180;
+        break;
+      case 'b': // lower leg 0
+          ServoTarget[0+KNEE_OFFSET] = 0;
+        break;
+      case 'l': //move left leg 0
+          ServoTarget[0] = 0;
+        break;
+      case 'r': //twist down
+          ServoTarget[0] = 180;
+        break;
+      }
+      break; // end of submode 3
+    
+    case SUBMODE_4: // rise/fall mode
+      // this mode retains state and moves slowly, it's for getting somethign like the joust or 
+      // capture the flag accessories in position
+
+      switch (cmd) {
+      case 's': 
+        // do nothing in stop mode, just hold current position
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i+KNEE_OFFSET] = ServoPos[i+NUM_LEGS];
+          ServoTarget[i] = ServoPos[i];
+        }
+        break;
+      case 'w':  // reset to standard standing position, resets both hips and knees
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i+KNEE_OFFSET] = KNEE_STAND;
+          ServoTarget[i] = 90;
+        }
+        break;
+      case 'f': // rise straight up to tiptoes
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i] = 90;
+          ServoTarget[i+KNEE_OFFSET] = 0;
+        }
+        break;
+      case 'b': // fall straight down
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i] = 90;
+          ServoTarget[i+KNEE_OFFSET] = 180;
+        }
+        break;
+      case 'l': //twist up
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i] = 0;
+          ServoTarget[i+KNEE_OFFSET] = 0;
+        }
+        break;
+      case 'r': //twist down
+        for (int i = 0; i < NUM_LEGS; i++) {
+          ServoTarget[i] = 180;
+          ServoTarget[i+KNEE_OFFSET] = 180;
+        }
+        break;
+    }
+    break; // end of submode 4
+  }
+}
+
 
 int flash(unsigned long t) {
   // the following code will return HIGH for t milliseconds
   // followed by LOW for t milliseconds. Useful for flashing
   // the LED on pin 13 without blocking
-  return (millis()%(2*t)) > t;
+  return (millis()%(2*t)) > t; // do NOT use hexmillis here, we want real time
 }
 
 //
@@ -2344,7 +3145,7 @@ unsigned long SuppressScamperUntil = 0;  // if we had to wake up the servos, sup
 
 void checkForServoSleep() {
 
-  if (millis() > freqWatchDog) {
+  if (millis() > freqWatchDog) { // do NOT use hexmillis here, we want real time
 
     // See if the servo driver module went to sleep, probably due to a short power dip
     Wire.beginTransmission(SERVO_IIC_ADDR);
@@ -2355,90 +3156,45 @@ void checkForServoSleep() {
     if (mode1 & 16) { // the fifth bit up from the bottom is 1 if controller was asleep
       // wake it up!
       resetServoDriver();
-      beep(1200,100);  // chirp to warn user of brown out on servo controller
+      beep(1200,50);  // chirp to warn user of brown out on servo controller
+      beep(800,50);
       SuppressScamperUntil = millis() + 10000;  // no scamper for you! (for 10 seconds because we ran out of power, give the battery
-                                                // a bit of time for charge migration and let the servos cool down)
+                                                // a bit of time for charge migration and let the servos cool down). Don't use hexmillis here.
     }
-    freqWatchDog = millis() + 100;
+    freqWatchDog = millis() + 100; // do NOT use hexmillis here
   }
 }
 
-void checkLegStressSituation() {
-      return; // This is experimental and for now we're disabling it by immediately returning
-
-#if 0
-      
-      // ok we got new data. Awesome! If it's not the same mode as the old data and would result in the robot
-      // attempting to lift off the ground with less than all six legs, then insert a 200 millisecond
-      // attempt to get the robot lifted back off the ground. For now we're just hard coding the
-      // major cases that would cause this in practice. A better solution would be to have a watchdog
-      // that models the robot's ground-to-standing state at a low level in the servo subroutines.
-      // We will do that in a future release, but for now this will save a lot of stress on the servos and
-      // is easy.
-
-      // first, let's see if all six legs are plausibly on the ground which we'll define as the hips all
-      // having been commanded to a standing angle at least 200 milliseconds ago
-      long now = millis();
-      byte alldown = 1;
-      for (int i = 0; i < NUM_LEGS; i++) {
-        if ( (ServoTime[i+KNEE_OFFSET] <= now - 200) && ServoPos[i+KNEE_OFFSET] <= KNEE_STAND) {
-          continue;  // this leg meets the criteria
-        }
-        // if we get here we found a leg that's possibly not all the way down
-        alldown = 0;
-        break;
-      }
-      if (alldown) {
-        return;   // no need to continue, all the legs are down
-      }
-
-      // ok, we're in a dangerous situation. Not every leg is down and we're switching to a new mode.
-      // for safety, if the new mode doesn't have all the legs down, we're going to insert a short
-      // extra move to bring the legs all down to the ground.
-      // the modes that don't have all legs down are: W2*, F1*, F2* if not with GRIPARM, D1l, D1r, D3*, D4*
-      // while technically some walking modes may not have all the legs down at certain times, only W2 (high step)
-      // would have the legs so far off the ground that it would be a major issue.
-
-      if (
-            (mode == 'W' && submode == '2' && lastCmd != 's') ||
-            (mode == 'F' && (submode == '1' || (submode == '2' && Dialmode != DIALMODE_RC_GRIPARM) )) ||
-            (mode == 'D' && (submode == '3' || submode == '4')) ||
-            (mode == 'D' && submode == '1' && (lastCmd == 'r' || lastCmd == 'l'))
-          ) {
-            // if we get here, we do in fact have a danger situation so command all the hips down
-            // to a standing position momentarily
-            stand();
-            delay(200);
-          }
-
-#endif
-}
-
-void checkForSmoothMoves() {
-  // This is kind of a hack right now for making the grip arm move smoothly. Really there should be a
-  // general mechanism that would apply to all servos for things like lean and twist mode as well as
-  // servos added by the user for use by Scratch. We'll kind of use this hack as a prototype for a
-  // more general mechanism to be implemented in a major revision later
-
-  if (abs(ServoPos[GRIPARM_ELBOW_SERVO] - GripArmElbowDestination) <= 1) { 
-    // uncomment the following line to debug grip elbow movement
-    //Serial.print("GA close pos="); Serial.print(ServoPos[GRIPARM_ELBOW_SERVO]); Serial.print(" dest="); Serial.println(GripArmElbowDestination);
-    return; // we're close enough to the intended destination already
-  }
+void GeneralCheckSmoothMoves() {
+  static long lastSmoothTime = 0;
   
-  #define SMOOTHINCREMENTTIME 20    // number of milliseconds between interpolated moves
-  static long LastSmoothMoveTime = 0;
-
-  long now = millis();
-  if (now >= LastSmoothMoveTime + SMOOTHINCREMENTTIME) {
-    LastSmoothMoveTime = now;
-    //Serial.print("Set GAE="); Serial.println(ServoPos[GRIPARM_ELBOW_SERVO]+GripArmElbowIncrement);
-    deferServoSet = 0;
-    setServo(GRIPARM_ELBOW_SERVO, ServoPos[GRIPARM_ELBOW_SERVO]+GripArmElbowIncrement);
-    
+#define SMOOTHTIME 20 // milliseconds resolution
+  
+  long now = millis(); // do NOT use hexmillis here, we need realtime
+  if (now >= lastSmoothTime + SMOOTHTIME) {
+    lastSmoothTime = now;
   } else {
-    //Serial.println("not time");
+    return; // not time yet
   }
+  for (int servo = 0; servo < 12; servo++) {
+    SmoothMove(servo);
+  }
+}
+
+void SmoothMove(int servo) {
+#define SMOOTHINC  3  // degrees per resolution time
+    int tmp = deferServoSet;
+    
+    if (abs(ServoPos[servo] - ServoTarget[servo]) <= SMOOTHINC) {
+      deferServoSet = 0;
+      setServo(servo, ServoTarget[servo]);
+      deferServoSet = tmp;
+      return;
+    }
+
+  deferServoSet = 0;
+  setServo(servo, ServoPos[servo] + (ServoPos[servo]>ServoTarget[servo]?(0-SMOOTHINC):SMOOTHINC)); 
+  deferServoSet = tmp;
 }
 
 unsigned long ReportTime = 0;
@@ -2448,7 +3204,6 @@ void loop() {
 
   checkForServoSleep();
   checkForCrashingHips();
-  checkForSmoothMoves();
   
   ////////////////////
   int p = analogRead(A0);
@@ -2470,11 +3225,11 @@ void loop() {
 
   if (Dialmode != priorDialMode && priorDialMode != -1) {
     beep(100+100*Dialmode,60);   // audio feedback that a new mode has been entered
-    SuppressModesUntil = millis() + 1000;
+    SuppressModesUntil = millis() + 1000; // do NOT use hexmillis here
   }
   priorDialMode = Dialmode;
 
-  if (millis() < SuppressModesUntil) {
+  if (millis() < SuppressModesUntil) { // do NOT use hexmillis here
     return;
   }
   
@@ -2488,7 +3243,7 @@ void loop() {
     stand();
     setGrip(90,90);   // in stand mode set the grip arms to neutral positions
     // in Stand mode we will also dump out all sensor values once per second to aid in debugging hardware issues
-    if (millis() > ReportTime) {
+    if (millis() > ReportTime) { // do not use hexmillis here
           ReportTime = millis() + 1000;
           Serial.println("Stand Mode, Sensors:");
           Serial.print(" A3="); Serial.print(analogRead(A3));
@@ -2503,7 +3258,7 @@ void loop() {
     digitalWrite(13, flash(100));  // Flash LED13 rapidly in adjust mode
     stand_90_degrees();
 
-    if (millis() > ReportTime) {
+    if (millis() > ReportTime) { // do not use hexmillis here
           ReportTime = millis() + 1000;
           Serial.println("AdjustMode");
     }
@@ -2532,7 +3287,7 @@ void loop() {
 
     digitalWrite(13, flash(2000));  // flash LED13 very slowly in demo mode
     random_gait(timingfactor);
-    if (millis() > ReportTime) {
+    if (millis() > ReportTime) {  // do not use hexmillis here
           ReportTime = millis() + 1000;
           Serial.println("Demo Mode");
     }
@@ -2541,7 +3296,7 @@ void loop() {
   } else { // bluetooth mode (regardless of whether it's with or without the grip arm)
 
     digitalWrite(13, HIGH);   // LED13 is set to steady on in bluetooth mode
-    if (millis() > ReportTime) {
+    if (millis() > ReportTime) { // do not use hexmillis here or on following line
           ReportTime = millis() + 2000;
           Serial.print("RC Mode:"); Serial.print(ServosDetached); Serial.write(lastCmd); Serial.write(mode); Serial.write(submode); Serial.println("");
     }
@@ -2551,10 +3306,10 @@ void loop() {
       // if its been more than 1 second since we got a valid bluetooth command
       // then for safety just stand still.
 
-      if (millis() > LastValidReceiveTime + 1000) {
+      if (millis() > LastValidReceiveTime + 1000) { // don't use hexmillis in any of this code
         if (millis() > LastValidReceiveTime + 15000) {
           // after 15 full seconds of not receiving a valid command, reset the bluetooth connection
-          Serial.println("Loss of Signal: resetting bluetooth");
+          //Serial.println("Loss of Signal: resetting bluetooth");
           // Make a three tone chirp to indicate reset
           beep(200,40); // loss of connection test
           delay(100);
@@ -2579,28 +3334,26 @@ void loop() {
       }
 
 
-      // fight submodes 3 and 4 should not be repeated without receiving
-      // a packet because otherwise they'll zoom right to the end state instead
-      // of giving the user a chance to make fine adjustments to position
-      if (mode == MODE_FIGHT && (submode == SUBMODE_3 || submode == SUBMODE_4)) {
-        //Serial.print("f");
-        return;
-      }
-
-      // If the griparm in enabled then fight mode 2 really is grip control mode and
-      // this mode is incremental in nature so the user can adjust the grip up/down/open/closed
-      // bit by bit
-      if (Dialmode == DIALMODE_RC_GRIPARM && mode == MODE_FIGHT && (submode == SUBMODE_2)) {
+      // The following three mode combinations must retain their state because they
+      // use an incremental move strategy. They also all use the smooth moves system
+      // to incrementally move the servos toward a target in a controlled fashion that
+      // allows the user to stop right where they want to stop. So, trigger the smooth move
+      // check and then just return, we don't want to auto-repeat the command.
+      if (
+            (mode == MODE_FIGHT && (submode == SUBMODE_3 || submode == SUBMODE_4)) ||
+            (mode == MODE_FIGHT2 && (submode == SUBMODE_2 || submode == SUBMODE_3 || submode == SUBMODE_4))  ||
+            (Dialmode == DIALMODE_RC_GRIPARM && mode == MODE_FIGHT && (submode == SUBMODE_2))
+          ) {
+        GeneralCheckSmoothMoves();
         return;
       }
 
     } else {
-      LastReceiveTime = millis();
-
-      checkLegStressSituation();
-      
+      LastReceiveTime = millis();    // don't use hexmillis() here, we want real time
     }
+    
     // Leg set mode should also not be repeated
+    
     if (mode == MODE_LEG) {
       //Serial.print("l");
       return;
@@ -2620,6 +3373,10 @@ void loop() {
     } else {
       //Serial.println(ScamperTracker);
     }
+
+    if (mode != MODE_WALK2 || submode != SUBMODE_4) {
+      FrontReverse = 0; // clear the reverse front feature if we're not in W4W4 mode (double click on W4 walks by redefining the front of the robot for turning)
+    }
     
     switch(lastCmd) {
       case '?': BlueTooth.println("#Vorpal Hexapod"); 
@@ -2627,11 +3384,20 @@ void loop() {
       case 'W': 
         mode = MODE_WALK; 
         break;
+      case 'X':
+        mode = MODE_WALK2;
+        break;
       case 'F': 
         mode = MODE_FIGHT; startedStanding = -1;
         break;
+      case 'Y':
+        mode = MODE_FIGHT2; startedStanding = -1;
+        break;
       case 'D': 
         mode = MODE_DANCE; startedStanding = -1;
+        break;
+      case 'Z':
+        mode = MODE_DANCE2;
         break;
       case '1': 
       case '2': 
@@ -2639,7 +3405,7 @@ void loop() {
       case '4': 
         submode = lastCmd;
         break;
-      case 'w':  // weapon mode, special depending on mode
+      case 'w':  // special mode, special depending on major mode. ("w" used to stand for "weapon" but that is outdated)
         startedStanding = -1;
         switch (mode) {
           case MODE_FIGHT:
@@ -2671,6 +3437,9 @@ void loop() {
                       cyc);
             }  
             break;
+           case MODE_WALK2: walk2(lastCmd, submode); break;
+           case MODE_DANCE2: dance2(lastCmd, submode); break;
+           case MODE_FIGHT2: fight2(lastCmd, submode); break;
           default:     // for any other mode implement a "horn"
             beep(400);
             break;
@@ -2707,6 +3476,10 @@ void loop() {
           case MODE_FIGHT:
             fight_mode(lastCmd, submode, FIGHT_CYCLE_TIME*timingfactor);
             break;
+
+          case MODE_WALK2: walk2(lastCmd, submode); break;
+          case MODE_DANCE2: dance2(lastCmd, submode); break;
+          case MODE_FIGHT2: fight2(lastCmd, submode); break;
         }
         break;
 
@@ -2739,6 +3512,9 @@ void loop() {
           case MODE_FIGHT:
               fight_mode(lastCmd, submode, FIGHT_CYCLE_TIME*timingfactor);
             break;
+          case MODE_WALK2: walk2(lastCmd, submode); break;
+          case MODE_DANCE2: dance2(lastCmd, submode); break;
+          case MODE_FIGHT2: fight2(lastCmd, submode); break;
         }
         break;
 
@@ -2771,6 +3547,9 @@ void loop() {
           case MODE_FIGHT:
             fight_mode(lastCmd, submode, FIGHT_CYCLE_TIME*timingfactor);
             break;
+          case MODE_WALK2: walk2(lastCmd, submode); break;
+          case MODE_DANCE2: dance2(lastCmd, submode); break;
+          case MODE_FIGHT2: fight2(lastCmd, submode); break;
         }
         break;
 
@@ -2804,6 +3583,9 @@ void loop() {
           case MODE_FIGHT:
               fight_mode(lastCmd, submode, FIGHT_CYCLE_TIME*timingfactor);
             break;
+          case MODE_WALK2: walk2(lastCmd, submode); break;
+          case MODE_DANCE2: dance2(lastCmd, submode); break;
+          case MODE_FIGHT2: fight2(lastCmd, submode); break;
         }
         break;
 
@@ -2818,6 +3600,12 @@ void loop() {
           tiptoes();
         } else if (mode == MODE_DANCE && submode == SUBMODE_4) {
           dance_hands(lastCmd);
+        } else if (mode == MODE_DANCE2) {
+          dance2(lastCmd, submode);
+        } else if (mode == MODE_WALK2) {
+          walk2(lastCmd, submode);
+        } else if (mode == MODE_FIGHT2) {
+          fight2(lastCmd, submode);
         } else {
             if (millis() - startedStanding > BATTERYSAVER) {
               //Serial.print("DET LC=");Serial.write(lastCmd); Serial.println("");
@@ -2835,7 +3623,7 @@ void loop() {
         break;
        
        default:
-        Serial.print("BAD CHAR:"); Serial.write(lastCmd); Serial.println("");
+        Serial.print("BADCHR:"); Serial.write(lastCmd); Serial.println("");
         beep(100,20);
     }  // end of switch
     

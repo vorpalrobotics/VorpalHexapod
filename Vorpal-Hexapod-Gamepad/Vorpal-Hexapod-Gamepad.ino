@@ -1,8 +1,8 @@
-// Copyright (C) 2017 Vorpal Robotics, LLC.
+// Copyright (C) 2017-2020 Vorpal Robotics, LLC.
 
-const char *Version = "#GV2r1a";  // this version adds DPAD encoding auto-detect and EEPROM storage
+const char *Version = "#GV3r1a";  // this version adds double click mode for more built in movements
 
-// This is the code that runs on the robot in the Vorpal The Hexapod project.
+// This is the code that runs on the Gamepad in the Vorpal The Hexapod project.
 
 
 //////////// For more information:
@@ -62,8 +62,6 @@ SOFTWARE.
 **********************/
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// This version fixes some issues with Scratch Record/Play and implements trim mode
-
 int debugmode = 0;          // Set to 1 to get more debug messages. Warning: this may make Scratch unstable so don't leave it on.
 
 #define DEBUG_SD  0         // Set this to 1 if you want debugging info about the SD card and record/play functions.
@@ -72,12 +70,12 @@ int debugmode = 0;          // Set to 1 to get more debug messages. Warning: thi
                             // It also takes up a lot of memory and you might get warnings from Arduino about too little
                             // RAM being left. But it seems to work for me even with that warning.
 
-#define DEBUG_BUTTONS 0     // There is some manufacturer who is selling defective DPAD modules that look just like the
-                            // ones sold by Vorpal Robotics, and they have a different set of output values for each
-                            // button (and only use a small percentage of the range of values, which is why I consider
-                            // them to be defective). If you get one of those, set this define to 1 and you'll get debug info sent
-                            // to the serial monitor to help you figure out what values will work. After that you can
-                            // modify the values in the decode_button() function below to suite your DPAD button module.
+#define DEBUG_BUTTONS 0     // Set to 1 to help debug button issues.
+
+#define DPADDEBUG  0        // Set this to 1 and it prints out dpad raw values. Useful if you have a nonstandard dpad that outputs values
+                            // that are atypical. The program right now supports the two most common dpad codings. Holding
+                            // down the special (topmost) dpad button during boot will auto-detect and set up EEPROM to
+                            // remember what kind of dpad you have.
 
 #define USE_SDIO 0
 #include <SdFat.h>
@@ -197,7 +195,7 @@ File SDScratchRecordFile;
 
 byte TrimMode = 0;
 byte verbose = 0;
-char ModeChars[] = {'W', 'D', 'F', 'R'};
+char ModeChars[] = {'W', 'D', 'F', 'R', 'X', 'Y', 'Z'};
 char SubmodeChars[] = {'1', '2', '3', '4'};
 
 char CurCmd = ModeChars[0];  // default is Walk mode
@@ -239,13 +237,18 @@ void debugln() {
 // multiple simultaneous button presses. We might use that in the future to increase the
 // effective number of possible controls.
 
-int priorMatrix = -1;
+int priorPriorMatrix = -1;  // whatever was hit two times ago not including duplicates
+int priorMatrix = -1;       // whatever was hit last time not including duplicates
 long curMatrixStartTime = 0;
-int longClick = 0;  // this will be set to 1 if the last matrix button pressed was held a long time
-int priorLongClick = 0; // used to track whether we should beep to indicate new longclick detected.
+long priorMatrixStartTime = 0;
+byte longClick = 0;  // this will be set to 1 if the last matrix button pressed was held a long time
+byte priorLongClick = 0; // used to track whether we should beep to indicate new longclick detected.
+byte doubleClick = 0;   // are we current in a double-click mode? 
 
 #define LONGCLICKMILLIS 500
 #define VERYLONGCLICKMILLIS 1000
+#define DEBOUNCEMILLIS 80
+#define DOUBLECLICKTIME 500
 
 // find out which button is pressed, the first one found is returned
 int scanmatrix() {
@@ -265,7 +268,7 @@ int scanmatrix() {
     // set only the row we're looking at output low
     pinMode(MATRIX_ROW_START+row, OUTPUT);
     digitalWrite(MATRIX_ROW_START+row, LOW);
-    
+          
     for (int col = 0; col < MATRIX_NCOL; col++) {
       delayMicroseconds(100);
       if (digitalRead(MATRIX_COL_START+col) == LOW) {
@@ -275,8 +278,10 @@ int scanmatrix() {
           CurSubCmd = SubmodeChars[col];
         }
         int curmatrix = row*MATRIX_NROW+col;
+        //Serial.print("START:"); Serial.print(doubleClick); Serial.print(' '); Serial.print(curmatrix); Serial.print(' '); Serial.print(priorMatrix); Serial.print(' '); Serial.print(priorPriorMatrix); Serial.println();
         int clicktime = millis() - curMatrixStartTime;
         if (curmatrix != priorMatrix) {
+
           curMatrixStartTime = millis();
           priorMatrix = curmatrix;
           longClick = priorLongClick = 0;
@@ -298,8 +303,54 @@ int scanmatrix() {
   // if we get here no buttons were pushed, return -1 and
   // clear out the timers used for long click detection.
   priorMatrix = -1;
+  priorMatrixStartTime = curMatrixStartTime;
   curMatrixStartTime = 0;
   return -1;
+}
+
+byte NeedDoubleClickBeep;
+
+void
+logMatrixClick(short click) {
+  static unsigned long clickTimes[4] = {0,0,0};
+  static short clickHistory[4] = {-1,-1,-1};
+
+  // clickHistory[0] is the most recent click
+  if (click == clickHistory[0]) {
+    // nothing has changed, user is still holding the same button down
+    return;
+  }
+  
+  for (int i = 3; i > 0; i--) {
+    clickHistory[i] = clickHistory[i-1];
+    clickTimes[i] = clickTimes[i-1];
+  }
+  clickHistory[0] = click;
+  clickTimes[0] = millis();
+
+  // logic for double click
+  //int priorDoubleClick = doubleClick;
+  doubleClick = 0;
+  unsigned long diff = clickTimes[3]-clickTimes[1];
+  int diffi = diff;
+
+  // A double click occurs if we have no click (-1) followed by a button, followed by no click again (-1) followed by the same button as before, and the
+  // two clicks of the same button happen in less than DOUBLECLICKTIME. Also, there are no double clicks on the RECORD line of buttons.
+  if (clickHistory[1] < REC_RECORD && clickHistory[0] == -1 && clickHistory[2] == -1 && clickHistory[1] == clickHistory[3] && (abs(diffi) < DOUBLECLICKTIME)) {
+    doubleClick = 1;
+    CurCmd = ModeChars[(clickHistory[1]/4)+4]; // transmit the higher level row character
+    setBeep(1000,100);
+  }
+
+  // Set the following #if to 1 to debug double click issues
+#if 0
+  Serial.print("DCLICK:");Serial.println(doubleClick);Serial.print("CT="); Serial.print(diffi); Serial.print(" CCM=");Serial.write(CurCmd); Serial.println("");
+  long now=millis();
+  // dump out clickhistory data
+  for (int i = 0; i < 4; i++) {
+    Serial.print(clickHistory[i]); Serial.print("@"); Serial.println(now-clickTimes[i]);
+  }
+#endif
 }
 
 // This decodes which button is pressed on the DPAD
@@ -310,7 +361,7 @@ int scanmatrix() {
 
 char decode_button(int b) {
 
-#if DEPADDEBUG
+#if DPADDEBUG
   Serial.print("DPAD: "); Serial.println(b);
 #endif
 
@@ -318,6 +369,11 @@ char decode_button(int b) {
 // The gamepad will detect this automatically if you hold down the "Special" (top) DPAD button
 // while booting.
 
+  if (DpadStyle == ALTDPADSTYLE && b > 400 && b < 850) { // this is a miscalibrated DPAD, fix it automatically
+    //DpadStyle = STDDPADSTYLE;
+    //EEPROM.update(0, DpadStyle);
+  }
+  
   switch (DpadStyle) {
   case ALTDPADSTYLE:
     if (b < 20) {
@@ -335,6 +391,7 @@ char decode_button(int b) {
     } else {
       return 's';  // stop (no button is pressed)
     }
+    break;
 
   case STDDPADSTYLE:
   default:
@@ -1037,8 +1094,12 @@ void RecordPlayHandler() {
   }
 }
 
+//
+// Standard setup function for Arduino, run once at program boot
+//
+
 void setup() {
-    Serial.begin(9600);
+  Serial.begin(9600);
   // see if we're supposed to be in trim mode or card format mode
   int mat = scanmatrix();
   if (mat == WALK_1) {
@@ -1050,6 +1111,7 @@ void setup() {
     SDCardFormat();
     Serial.println("#sdfmt done");
   }
+
   // make a characteristic flashing pattern to indicate the gamepad code is loaded.
   pinMode(13, OUTPUT);
   for (int i = 0; i < 3; i++) {
@@ -1080,34 +1142,35 @@ void setup() {
   // a DPAD button style has been previously stored in EEPROM at position 0
   //
   int dp = analogRead(DpadPin);
-  //Serial.println(dp); // uncomment this if you're having trouble with DPAD autodetect
-  if (dp < 800) { // some dpad button is being held
-    Serial.print("#DP"); // DPAD AutoDetect
+  Serial.println(dp); // uncomment this if you're having trouble with DPAD autodetect
+  if (dp < 850) { // some dpad button is being held
+    Serial.print("#DPA"); // DPAD AutoDetect
     if (dp > 250 && dp < 500) { // Alternative dpad detected
       DpadStyle = ALTDPADSTYLE;
-      Serial.println("ALT");
     } else if (dp > 600 && dp < 850) { // standard dpad
       DpadStyle = STDDPADSTYLE;
-      Serial.println("STD");
     } else {
       Serial.println(dp); // not detected, something's wrong, just leave it at the default
     }
     EEPROM.update(0, DpadStyle); // save for future boots
+    //Serial.println("EEUPDATED");
   } else {
     // check to see if a prior dpad style has been selected and stored in the
     // EEPROM at position 0
-    dp = EEPROM.read(0);
+    byte dp = EEPROM.read(0);
+    Serial.print("EE0="); Serial.println(dp);
     if (dp < NUMDPADSTYLES) { // any value greater or equal to NUMDPADSTYLES is invalid
       DpadStyle = dp;
       Serial.print("#DPE"); // DPAD EEPROM detect
-      if (DpadStyle == STDDPADSTYLE) { 
-        Serial.println("STD");
-      } else {
-        Serial.println("ALT");
-      }
+    } else {
+      Serial.print("#DPI"); // DPAD internal default
     }
   }
-  
+  if (DpadStyle == STDDPADSTYLE) { 
+      Serial.println("ST"); // standard dpad
+  } else {
+      Serial.println("AL"); // alternative dpad
+  }
 }
 
 int priormatrix = -1;
@@ -1331,6 +1394,8 @@ void loop() {
         }
 #endif
   int matrix = scanmatrix();
+
+  logMatrixClick(matrix); // does analysis to determine double click and long click
   CurDpad = decode_button(analogRead(DpadPin));
   
   if (debugmode && matrix != -1) {
