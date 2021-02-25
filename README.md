@@ -43,6 +43,11 @@ F4F4: Raise/lower the robot with and without spiral motions.
    gigapod). While the megapod worked reasonably well under the same timing as the small version of the robot and on a tiny difference is there, the gigapod
    needed significant different timing.
 
+6) Booting the gamepad with D2 held down will enter "packet pad mode" which is a work-around for certain HC05 modules that have recently flooded the market. 
+   These modules will not transmit until a certain number of bytes are sent, thus causing tremendous lag. (Note: We never sell these modules, we consider
+   them defective, but some self-sourcers are using them). The mode is saved in EEPROM. Booting with D1 pressed will turn it off. Don't use this unless you
+   are seeing 2 to 3 second lag between gamepad and robot.
+
 LIMITATIONS
 
 The new double click leg motions are not available to the ScratchX interface yet. We are doing a major overhaul of our Scratch code in 2020.

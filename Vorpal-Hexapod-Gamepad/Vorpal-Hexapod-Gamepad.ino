@@ -1,6 +1,6 @@
 // Copyright (C) 2017-2021 Vorpal Robotics, LLC.
 
-const char *Version = "#GV3r1b";  // this version has option to pad out radio packets to 230 bytes to support newer HC05 modules (versions 3 and 4) that buffer
+const char *Version = "#GV3r1c";  // this version has option to pad out radio packets to 230 bytes to support newer HC05 modules (versions 3 and 4) that buffer
 
 // This is the code that runs on the Gamepad in the Vorpal The Hexapod project.
 
