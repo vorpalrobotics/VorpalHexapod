@@ -2,11 +2,12 @@
 ////////////////////////////////////////////////////////////////////////////////
 //           Vorpal Hexapod Control Program  
 //
-// Copyright (C) 2017, 2018, 2019, 2020 Vorpal Robotics, LLC.
+// Copyright (C) 2017-2021 Vorpal Robotics, LLC.
 //
 // See below all the license comments for new features in this version. (Search for NEW FEATURES)
 
-const char *Version = "#RV3r1a"; // This version introduces new leg motions on double-click gamepad modes
+const char *Version = "#RV3r1c"; // This version supports padding out radio packets to 230 bytes to support newer HC05 firmware versions (starting with 3 and 4)
+                                 // This version fixes a bug in Griparm mode ("A" mode on dial)
 
 //////////// FOR MORE INFORMATION ///////////////////////////////////
 // Main website:                  http://www.vorpalrobotics.com
@@ -88,7 +89,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 *******************************************************************************/
 /////////////////////////////////////////////////////////////////////////////////
 
-////////////// NEW FEATURES IN THIS RELEASE (V3) /////////////////////
+////////////// NEW FEATURES IN THIS RELEASE (V3a) /////////////////////
+//
+// This release provides support for newer HC05 modules (with AT+VERSION? numbers starting with 3.0 and 4.0). These modules
+// buffer 230 bytes before sending. So far I've not been able to find a spec sheet with any magic AT command to turn this
+// buffering off. The strategy to work around this is to output enough bytes to get to 230 on every packet. There is plenty
+// of bandwidth to do this.
+//
+// Other features that were new to version V3 are:
 // 1) The biggest new feature in this release is support for a second level of actions using double clicks on the gamepad.
 // So there are four new walking modes, four new dance modes, and four new fight/tilt modes. Double clicks do not affect
 // record play functions.
@@ -184,6 +192,8 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 // being number 5
 
 #define NUM_LEGS 6
+#define NUM_ACTIVE_SERVO (2*NUM_LEGS+NUM_GRIPSERVOS)
+#define MAX_SERVO (2*NUM_LEGS+MAX_GRIPSERVOS)
 
 // Bit patterns for different combinations of legs
 // bottom six bits. LSB is leg number 0
@@ -307,13 +317,16 @@ Adafruit_PWMServoDriver servoDriver = Adafruit_PWMServoDriver(SERVO_IIC_ADDR);
 
 // Definitions for the servos
 
-unsigned short ServoPos[2*NUM_LEGS+MAX_GRIPSERVOS]; // the last commanded position of each servo
-unsigned short ServoTarget[2*NUM_LEGS+MAX_GRIPSERVOS];
-long ServoTime[2*NUM_LEGS+MAX_GRIPSERVOS]; // the time that each servo was last commanded to a new position
-byte ServoTrim[2*NUM_LEGS+MAX_GRIPSERVOS];  // trim values for fine adjustments to servo horn positions
+unsigned short ServoPos[MAX_SERVO]; // the last commanded position of each servo
+unsigned short ServoTarget[MAX_SERVO];
+long ServoTime[MAX_SERVO]; // the time that each servo was last commanded to a new position
+byte ServoTrim[MAX_SERVO];  // trim values for fine adjustments to servo horn positions
 long startedStanding = 0;   // the last time we started standing, or reset to -1 if we didn't stand recently
 long LastReceiveTime = 0;   // last time we got a bluetooth packet
 unsigned long LastValidReceiveTime = 0;  // last time we got a completely valid packet including correct checksum
+
+byte HC05_pad = 0;  // if set to 1 we will pad out sensor data with nulls to 230 bytes to support some newer hc05 models that buffer.
+                    // this is turned on if we see padding coming from the gamepad.
 
 #define DIALMODE_STAND 0
 #define DIALMODE_ADJUST 1
@@ -659,8 +672,11 @@ void griparm_mode(char dpad) {
       switch (dpad) {
       case 's': 
         // do nothing in stop mode, just hold current position
-        ServoTarget[GRIPARM_ELBOW_SERVO] = ServoPos[GRIPARM_ELBOW_SERVO];
-        ServoTarget[GRIPARM_CLAW_SERVO] = ServoPos[GRIPARM_CLAW_SERVO];
+        for (int i = 0; i < NUM_ACTIVE_SERVO; i++) {
+          ServoTarget[i] = ServoPos[i];
+        }
+        // ServoTarget[GRIPARM_ELBOW_SERVO] = ServoPos[GRIPARM_ELBOW_SERVO];
+        // ServoTarget[GRIPARM_CLAW_SERVO] = ServoPos[GRIPARM_CLAW_SERVO];
         break;
       case 'w':  // reset to standard grip arm position, arm raised to mid-level and grip open a medium amount
         ServoTarget[GRIPARM_ELBOW_SERVO] = GRIPARM_ELBOW_DEFAULT;
@@ -1799,6 +1815,18 @@ bluewriteword(int w) {
   return h+l;
 }
 
+// pad out packet with nulls to force newer hc05 modules to flush
+void padwrite(int len) {
+
+  if (HC05_pad == 0) { return; }  // don't pad
+  
+  // we have to add 4 to the length because the length byte of the protocol does not include th V1, the length byte, or the checksum.
+  int zero = 0;
+  for (int i = len+4; i < 230; i++) {
+    BlueTooth.write(zero);
+  }
+}
+
 void
 sendSensorData() {
 
@@ -1832,6 +1860,7 @@ sendSensorData() {
   checksum = (checksum%256);
   BlueTooth.write(checksum); // end with checksum of data and length   
   //Serial.println("Sens");
+  padwrite(length);
 
   startedStanding = millis(); // sensor commands are coming from scratch so suppress sleep mode if this comes in
 
@@ -1868,6 +1897,7 @@ byte mode = MODE_WALK; // default
 byte submode = SUBMODE_1;     // standard submode.
 byte timingfactor = 1;   // default is full speed. If this is greater than 1 it multiplies the cycle time making the robot slower
 short priorDialMode = -1;
+long NullCount = 0;
 
 int receiveDataHandler() {
 
@@ -1903,12 +1933,21 @@ Serial.println("");
             flushcount++;
           }
           Serial.print("F:"); Serial.print(flushcount);
-          packetErrorChirp(c);
+          if (c != 0) { // we will not chirp on a null, this allows padding of packet for certain BT modules that don't flush the buffer on their own
+            packetErrorChirp(c);
+          } else {
+            NullCount++;
+            if (NullCount > 100) {
+              // if we see this many consecutive nulls we will assume we're in hc05 pad mode
+              HC05_pad = 1;
+            }
+          }
         }
         break;
       case P_WAITING_FOR_VERSION:
         if (c == '1') {
           packetState = P_WAITING_FOR_LENGTH;
+          NullCount = 0; // reset null count since we're clearly inside protocol
           //Serial.print("GOT 1 ");
         } else if (c == 'V') {
           // this can actually happen if the checksum was a 'V' and some noise caused a
@@ -3176,7 +3215,7 @@ void GeneralCheckSmoothMoves() {
   } else {
     return; // not time yet
   }
-  for (int servo = 0; servo < 12; servo++) {
+  for (int servo = 0; servo < NUM_ACTIVE_SERVO; servo++) {
     SmoothMove(servo);
   }
 }

@@ -1,6 +1,6 @@
-// Copyright (C) 2017-2020 Vorpal Robotics, LLC.
+// Copyright (C) 2017-2021 Vorpal Robotics, LLC.
 
-const char *Version = "#GV3r1a";  // this version adds double click mode for more built in movements
+const char *Version = "#GV3r1b";  // this version has option to pad out radio packets to 230 bytes to support newer HC05 modules (versions 3 and 4) that buffer
 
 // This is the code that runs on the Gamepad in the Vorpal The Hexapod project.
 
@@ -203,7 +203,15 @@ char CurSubCmd = SubmodeChars[0]; // default is primary submode
 char CurDpad = 's'; // default is stop
 unsigned int BeepFreq = 0;   // frequency of next beep command, 0 means no beep, should be range 50 to 2000 otherwise
 unsigned int BeepDur = 0;    // duration of next beep command, 0 means no beep, should be in range 1 to 30000 otherwise
-                             // although if you go too short, like less than 30, you'll hardly hear anything
+                            // although if you go too short, like less than 30, you'll hardly hear anything
+
+         
+byte HC05_pad = 0; // if 1, we will pad out hc05 transmissions to 230 bytes to force buffer flush for some recent hc05 modules
+                   // this can be changed to 1 by holding down W2 while booting, or set back to 0 by holding down W1 while booting
+                   // the value is saved in EEPROM and read at boot in setup(). 
+                   // If the robot code sees lots of nulls in between packets it will automatically
+                   // use padding on return protocol (such as sensor reports for scratch)
+
 
 void println() {
   Serial.println("");
@@ -595,7 +603,7 @@ void SDCardFormat() {
   }
   cardCapacityMB = (cardSizeBlocks + 2047)/2048;
 
-  Serial.print("#SD"); Serial.println(cardCapacityMB);  // output the number of megabytes for the detected card
+  Serial.print("#SD"); Serial.print(cardCapacityMB); Serial.print(":"); Serial.println(cardSizeBlocks); // output the number of megabytes for the detected card
 
     ////////////////////////////////////
     // flash erase all data
@@ -612,9 +620,10 @@ void SDCardFormat() {
       lastBlock = cardSizeBlocks - 1;
     }
     if (!card.erase(firstBlock, lastBlock)) {
-      sdError("4");
+      sdError("4"); Serial.print(firstBlock); Serial.print(":"); Serial.println(lastBlock);
     }
-    firstBlock += ERASE_SIZE;
+    //firstBlock += ERASE_SIZE;
+    firstBlock = lastBlock+1;
   } while (firstBlock < cardSizeBlocks);
 
   if (!card.readBlock(0, cache.data)) {
@@ -954,6 +963,7 @@ void SendNextRecordedFrame(File *file, char *filename, int loop) {
             setBeep(0,0); // clear the beep since we've already sent it out
             checksum = (checksum % 256);
             BlueTooth.write(checksum);
+            padwrite(length+5);
 #if DEBUG_SD
             Serial.print("#CS"); Serial.println(checksum);
 #endif
@@ -962,6 +972,19 @@ void SendNextRecordedFrame(File *file, char *filename, int loop) {
 #if DEBUG_SD
         Serial.print("#P:"); Serial.print(filename); Serial.println(file->position());
 #endif
+}
+
+// pad out packet with nulls to force newer hc05 modules to flush
+
+void padwrite(int len) {
+  if (HC05_pad == 0) {
+    return;  // we are not padding
+  }
+  // we have to add 4 to the length because the length byte of the protocol does not include th V1, the length byte, or the checksum.
+  int zero = 0;
+  for (int i = len+4; i < 230; i++) {
+    BlueTooth.write(zero);
+  }
 }
 
 void RecordPlayHandler() {
@@ -1100,7 +1123,12 @@ void RecordPlayHandler() {
 
 void setup() {
   Serial.begin(9600);
-  // see if we're supposed to be in trim mode or card format mode
+
+  HC05_pad = EEPROM.read(1);
+  if (HC05_pad == 255) { // eeprom was never set up
+    HC05_pad == 0;
+  }
+  // see if we're supposed to be in trim mode or card format mode or HC05 pad mode
   int mat = scanmatrix();
   if (mat == WALK_1) {
     Serial.println("#trim");
@@ -1110,7 +1138,14 @@ void setup() {
     Serial.println("#sdfmt");
     SDCardFormat();
     Serial.println("#sdfmt done");
+  } else if (mat == DANCE_1) { // no padding of BT packets
+    HC05_pad = 0;
+    EEPROM.update(1, HC05_pad); // save for future boots
+  } else if (mat == DANCE_2) { // pad BT packets
+    HC05_pad = 1;
+    EEPROM.update(1, HC05_pad); // save for future boots
   }
+
 
   // make a characteristic flashing pattern to indicate the gamepad code is loaded.
   pinMode(13, OUTPUT);
@@ -1286,6 +1321,7 @@ int handleSerialInput() {
           if (ScratchXmitBytes > ScratchLength) {
               // everything got sent, including the checksum byte
               ScratchState = SCR_WAITING_FOR_HEADER;
+              padwrite(ScratchLength); // pad out to 230 bytes to support version 3 and 4 firmware in newer hc05 modules
           }
         break;
       case SCR_REC_COMMAND:
@@ -1385,6 +1421,7 @@ void send_trim(int matrix, int dpad) {
     unsigned int checksum = two + 'T' + trim;
     checksum = (checksum % 256);
     BlueTooth.write(checksum);
+    padwrite(two);
 }
 
 void loop() {
@@ -1708,7 +1745,7 @@ void loop() {
     checksum += eight+CurCmd+CurSubCmd+CurDpad;
     checksum = (checksum % 256);
     BlueTooth.write(checksum);
-    //BlueTooth.flush();
+    padwrite(eight);
     
     setBeep(0,0); // clear the current beep because it's been sent now
     
